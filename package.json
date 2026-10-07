@@ -1,0 +1,23 @@
+{
+  "name": "devforge",
+  "version": "3.1.0",
+  "private": true,
+  "description": "Chromium side-panel toolkit for inspecting, exporting and recreating web pages",
+  "license": "MIT",
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "test:unit": "node tests/unit_site.js",
+    "test:e2e": "python3 tests/test_agent.py && python3 tests/test_extension.py && python3 tests/test_adversarial.py && python3 tests/test_site.py",
+    "test": "npm run test:unit && npm run test:e2e",
+    "pack": "sh scripts/pack.sh"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "acorn": "^8.19.0",
+    "eslint": "^9.39.5",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.9"
+  }
+}

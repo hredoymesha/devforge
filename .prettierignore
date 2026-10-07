@@ -1,0 +1,6 @@
+lib/acorn.js
+lib/beautifier.min.js
+node_modules
+tests/fixtures
+*.zip
+package-lock.json

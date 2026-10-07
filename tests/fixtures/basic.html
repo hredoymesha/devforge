@@ -1,0 +1,31 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Fixture basic</title>
+<style>
+:root{--brand:#1a73e8;--gap:12px}
+body{font-family:Georgia,serif;margin:0;background:#fafafa;color:#222}
+.card{background:#fff;border:1px solid #ddd;border-radius:8px;padding:var(--gap);margin:16px;width:320px;box-shadow:0 2px 6px rgba(0,0,0,.15);animation:fade 1s ease}
+.card h2{margin:0 0 8px;font-size:20px;color:var(--brand)}
+.card p{margin:0 0 8px;line-height:1.5}
+.card .btn{display:inline-block;background:var(--brand);color:#fff;padding:6px 14px;border-radius:4px;border:0;cursor:pointer}
+.card .btn:hover{background:#0b57d0}
+#hero .btn.primary{background:#d93025}
+.card::before{content:"★";color:gold;margin-right:4px}
+.low{color:#aaa;background:#fff}
+@media (max-width:600px){.card{width:auto}}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+</style></head><body>
+<main><div class="card" id="hero" data-testid="hero-card"><h2>Hello card</h2><p>Some body text <a href="https://example.com/a">link</a></p>
+<button class="btn primary" onclick="window.__clicked=(window.__clicked||0)+1">Buy</button>
+<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+</div>
+<p class="low">Low contrast text</p>
+<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+<input type="text" id="nolabel"><h4>Skipped heading</h4>
+<ul class="list"><li class="item"><h3>One</h3><a href="/1">more</a></li><li class="item"><h3>Two</h3><a href="/2">more</a></li><li class="item"><h3>Three</h3><a href="/3">more</a></li></ul>
+<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>
+</main>
+<script>
+document.getElementById('hero').addEventListener('mouseenter',()=>{});
+window.heroInit=function(){ document.getElementById('hero').dataset.ready='1'; };
+heroInit();
+fetch(location.href.replace(/[^/]*$/,'api.json')).catch(()=>{});
+</script></body></html>

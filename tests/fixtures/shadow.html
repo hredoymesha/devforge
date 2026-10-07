@@ -1,0 +1,7 @@
+<!doctype html><html lang="en"><head><title>Shadow</title></head><body>
+<my-widget id="w"></my-widget>
+<script>
+class W extends HTMLElement{constructor(){super();const r=this.attachShadow({mode:'open'});r.innerHTML='<style>.inner{color:rgb(200,0,0);padding:10px;border:1px solid #000}</style><div class="inner" id="in">Inside shadow</div>';}}
+customElements.define('my-widget',W);
+const c=document.createElement('div');c.id='closed';c.attachShadow({mode:'closed'}).innerHTML='<b>closed</b>';document.body.append(c);
+</script></body></html>
