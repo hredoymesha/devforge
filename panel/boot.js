@@ -60,6 +60,7 @@ DF.tabs.forEach((t) =>
 );
 // Widths are measured once while every tab is visible; labels never change afterwards.
 let tabWidths = null;
+let hiddenTabs = []; // ids of the panels currently moved into the overflow menu
 function layoutTabs() {
   const buttons = [...tabsEl.children];
   if (!tabWidths) {
@@ -70,7 +71,7 @@ function layoutTabs() {
       return;
     }
   }
-  const avail = tabsEl.parentElement.clientWidth - 36; // room for the » button
+  const avail = tabsEl.parentElement.clientWidth - 36; // room for the overflow button
   const total = [...tabWidths.values()].reduce((a, b) => a + b, 0);
   const overflow = [];
   if (total > avail + 36) {
@@ -87,53 +88,123 @@ function layoutTabs() {
     }
   }
   buttons.forEach((b) => (b.hidden = overflow.includes(b)));
-  moreBtn.hidden = !overflow.length;
+  const ids = overflow.map((b) => b.dataset.id);
+  // The menu is built from this list when it opens; a layout change under an open menu closes it.
+  if (!moreMenu.hidden && ids.join() !== hiddenTabs.join()) closeMenu();
+  hiddenTabs = ids;
+  moreBtn.hidden = !ids.length;
+  $('#tabs-more-count').textContent = ids.length > 99 ? '99+' : String(ids.length);
+  const name = ids.length + ' hidden panel' + (ids.length === 1 ? '' : 's');
+  moreBtn.setAttribute('aria-label', name);
+  moreBtn.title = name;
+}
+
+/* ---------- overflow menu ---------- */
+// Hidden panels are listed by area, like DevTools groups its tools. Panels not listed here
+// (Settings, or any panel added later) go in an untitled group at the end.
+const TAB_GROUPS = [
+  ['Inspect & style', ['inspect', 'css', 'tokens']],
+  ['Network', ['network']],
+  ['Performance', ['perf', 'mutations', 'audit']],
+  ['Application', ['storage', 'data']],
+  ['Build & ship', ['export', 'site', 'recreate', 'play', 'auto', 'ai', 'work']],
+];
+const menuItems = () => [...moreMenu.querySelectorAll('[role="menuitem"]')];
+function renderMenu() {
+  const grouped = new Set(TAB_GROUPS.flatMap(([, ids]) => ids));
+  const groups = [
+    ...TAB_GROUPS.map(([title, ids]) => [title, hiddenTabs.filter((id) => ids.includes(id))]),
+    ['', hiddenTabs.filter((id) => !grouped.has(id))],
+  ].filter(([, ids]) => ids.length);
   clear(moreMenu).append(
-    ...overflow.map((b) =>
-      h(
-        'li',
-        { role: 'none' },
-        h(
-          'button',
-          {
-            role: 'menuitem',
-            on: {
-              click: () => {
-                closeMenu();
-                show(b.dataset.id);
+    ...groups.map(([title, ids], gi) => {
+      const headId = 'tabs-menu-g' + gi;
+      return h(
+        'div',
+        {
+          role: 'group',
+          class: 'menu-group',
+          'aria-labelledby': title ? headId : null,
+          'aria-label': title ? null : 'Other',
+        },
+        title ? h('div', { class: 'menu-head', id: headId, role: 'presentation' }, title) : null,
+        ...ids.map((id) => {
+          const t = DF.tabs.find((x) => x.id === id);
+          const sc = DF.state.settings.shortcuts['open-' + id] || '';
+          return h(
+            'button',
+            {
+              role: 'menuitem',
+              tabindex: -1,
+              'data-id': id,
+              // ARIA spells the modifier "Control"; a combo containing a space cannot be expressed.
+              'aria-keyshortcuts': sc && !/\s/.test(sc) ? sc.replace(/^Ctrl\b/, 'Control') : null,
+              on: {
+                click: () => {
+                  closeMenu();
+                  show(id);
+                  // show() swaps the chosen panel into the bar; move focus to its tab.
+                  const tab = $('#tab-' + id);
+                  (tab && !tab.hidden ? tab : moreBtn).focus();
+                },
               },
             },
-          },
-          b.textContent
-        )
-      )
-    )
+            h('span', null, t.label),
+            sc ? h('kbd', null, sc) : null
+          );
+        })
+      );
+    })
   );
 }
-function closeMenu() {
+function openMenu(focus = 'first') {
+  renderMenu();
+  moreMenu.hidden = false;
+  moreBtn.setAttribute('aria-expanded', 'true');
+  const items = menuItems();
+  const target = focus === 'last' ? items[items.length - 1] : items[0];
+  if (target) target.focus();
+}
+function closeMenu(returnFocus = false) {
+  if (moreMenu.hidden) return;
   moreMenu.hidden = true;
   moreBtn.setAttribute('aria-expanded', 'false');
+  if (returnFocus) moreBtn.focus();
 }
 moreBtn.addEventListener('click', (e) => {
   e.stopPropagation();
-  const open = moreMenu.hidden;
-  moreMenu.hidden = !open;
-  moreBtn.setAttribute('aria-expanded', String(open));
-  if (open) {
-    const first = moreMenu.querySelector('button');
-    if (first) first.focus();
-  }
+  if (moreMenu.hidden) openMenu();
+  else closeMenu(true);
+});
+moreBtn.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  e.preventDefault();
+  openMenu(e.key === 'ArrowUp' ? 'last' : 'first');
 });
 moreMenu.addEventListener('keydown', (e) => {
-  const items = [...moreMenu.querySelectorAll('button')];
+  const items = menuItems();
+  if (!items.length) return;
   const i = items.indexOf(document.activeElement);
-  if (e.key === 'ArrowDown') items[(i + 1) % items.length].focus();
-  else if (e.key === 'ArrowUp') items[(i - 1 + items.length) % items.length].focus();
+  let next = null;
+  if (e.key === 'ArrowDown') next = items[(i + 1) % items.length];
+  else if (e.key === 'ArrowUp') next = items[(i - 1 + items.length) % items.length];
+  else if (e.key === 'Home') next = items[0];
+  else if (e.key === 'End') next = items[items.length - 1];
   else if (e.key === 'Escape') {
-    closeMenu();
-    moreBtn.focus();
+    e.preventDefault();
+    e.stopPropagation(); // keep the in-panel shortcut handler from seeing it
+    return closeMenu(true);
+  } else if (e.key === 'Tab') return closeMenu(); // let focus move on naturally
+  else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    // Type-ahead: jump to the next panel whose name starts with the typed character.
+    const k = e.key.toLowerCase();
+    const order = [...items.slice(i + 1), ...items.slice(0, i + 1)];
+    next = order.find((b) => b.firstChild.textContent.toLowerCase().startsWith(k)) || null;
+    if (!next) return;
   } else return;
   e.preventDefault();
+  e.stopPropagation();
+  next.focus();
 });
 document.addEventListener('click', (e) => {
   if (!moreMenu.hidden && !moreMenu.contains(e.target)) closeMenu();
