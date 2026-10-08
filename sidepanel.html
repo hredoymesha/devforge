@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>DevForge</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header id="top">
+      <h1 class="brand"><span class="logo" aria-hidden="true">⚒</span>DevForge</h1>
+      <div id="target" class="target" title="The tab DevForge is working on">no tab</div>
+      <button id="btn-pick" class="primary" title="Pick an element on the page (Esc to cancel)">
+        <span aria-hidden="true">⌖</span> Pick
+      </button>
+      <button
+        id="btn-palette"
+        class="icon"
+        title="Command palette (Ctrl+K)"
+        aria-label="Command palette"
+      >
+        ⌘K
+      </button>
+      <button id="btn-theme" class="icon" title="Theme: system" aria-label="Switch theme">◐</button>
+    </header>
+    <div class="tabbar">
+      <nav id="tabs" role="tablist" aria-label="Tools"></nav>
+      <button
+        id="tabs-more"
+        class="tabs-more"
+        hidden
+        aria-haspopup="menu"
+        aria-expanded="false"
+        aria-label="More tools"
+        title="More tools"
+      >
+        »
+      </button>
+      <ul id="tabs-menu" class="menu" role="menu" hidden></ul>
+    </div>
+    <div id="status" role="status" aria-live="polite" hidden>
+      <span id="status-text"></span>
+      <button id="status-close" class="icon ghost" aria-label="Dismiss message" title="Dismiss">
+        ✕
+      </button>
+    </div>
+    <main id="view" role="tabpanel" tabindex="-1"></main>
+    <div id="palette" hidden>
+      <div class="pal-box" role="dialog" aria-modal="true" aria-label="Command palette">
+        <input
+          id="pal-input"
+          placeholder="Type a command…"
+          aria-label="Command palette"
+          aria-controls="pal-list"
+          autocomplete="off"
+        />
+        <ul id="pal-list" role="listbox"></ul>
+        <div class="pal-foot">↑↓ to move · Enter to run · Esc to close</div>
+      </div>
+    </div>
+    <div id="toast" role="alert"></div>
+    <script src="lib/acorn.js"></script>
+    <script src="lib/beautifier.min.js"></script>
+    <script src="lib/zip.js"></script>
+    <script src="lib/gen.js"></script>
+    <script src="lib/validate.js"></script>
+    <script src="lib/ai.js"></script>
+    <script src="lib/store.js"></script>
+    <script src="lib/site.js"></script>
+    <script src="lib/safe.js"></script>
+    <script src="lib/har.js"></script>
+    <script src="lib/tokens.js"></script>
+    <script src="panel/core.js"></script>
+    <script src="panel/inspect.js"></script>
+    <script src="panel/css.js"></script>
+    <script src="panel/export.js"></script>
+    <script src="panel/site.js"></script>
+    <script src="panel/recreate.js"></script>
+    <script src="panel/network.js"></script>
+    <script src="panel/perf.js"></script>
+    <script src="panel/mutations.js"></script>
+    <script src="panel/storage.js"></script>
+    <script src="panel/tokens.js"></script>
+    <script src="panel/audit.js"></script>
+    <script src="panel/data.js"></script>
+    <script src="panel/ai.js"></script>
+    <script src="panel/playground.js"></script>
+    <script src="panel/automate.js"></script>
+    <script src="panel/workspace.js"></script>
+    <script src="panel/settings.js"></script>
+    <script src="panel/boot.js"></script>
+  </body>
+</html>
