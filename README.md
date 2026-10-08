@@ -5,13 +5,7 @@ the page you are working on and gives you an inspector, a network layer you can 
 rewrite, Core Web Vitals profiling, a DOM mutation timeline, storage editing and design-token
 extraction. Everything runs in your browser. There are no accounts, servers or analytics.
 
-[English](#english) · [বাংলা](#বাংলা)
-
----
-
-## English
-
-### Why DevForge
+## Why DevForge
 
 Chrome DevTools is the reference, and DevForge does not try to replace it. It covers the work
 that DevTools makes slow: mocking an API response without a proxy, seeing which element caused
@@ -19,7 +13,7 @@ your LCP, exporting a component with its computed styles, or turning a site's co
 design tokens. DevForge is a Manifest V3 extension. It asks for the least access it needs, and
 it only injects code into a page when you use a tool on that page.
 
-### Panels
+## Panels
 
 The panels are grouped the way you would move through a debugging session.
 
@@ -68,7 +62,13 @@ The panels are grouped the way you would move through a debugging session.
 A command palette (`Ctrl+K`), in-panel shortcuts you can rebind, and light, dark and system
 themes are available in every panel.
 
-### Architecture
+When the side panel is too narrow for every tab, the remaining panels move into an overflow menu.
+Its button shows how many panels are hidden, and the menu lists them under the same groups as
+above, each with its shortcut if you have bound one in Settings. The menu works from the
+keyboard: arrow keys, Home/End, or a panel's first letter to move; Enter to open; Esc to close
+and return focus to the button.
+
+## Architecture
 
 ```
 background.js        Service worker. Opens the panel and passes keyboard and context-menu
@@ -93,7 +93,7 @@ Where data is stored: settings and interception rules go in `chrome.storage.loca
 waiting for the panel to start goes in `chrome.storage.session`, and Workspace projects go in
 IndexedDB. None of it leaves the browser.
 
-### Permissions
+## Permissions
 
 | Permission | Why it is needed |
 | --- | --- |
@@ -105,7 +105,7 @@ IndexedDB. None of it leaves the browser.
 | `clipboardWrite` | Copies code and prompts when you ask. |
 | Site access (optional) | Requested per site, only to export assets, read cross-origin stylesheets or capture from page start. You can revoke it in the extension's details page. |
 
-### Install from source
+## Install from source
 
 1. Clone this repository.
 2. Open `chrome://extensions` and turn on **Developer mode**.
@@ -115,7 +115,7 @@ IndexedDB. None of it leaves the browser.
 
 Chrome 116 or newer is required.
 
-### Development
+## Development
 
 The extension has no build step: the files in the repository are exactly what Chrome loads.
 Before you commit, run at least a syntax check:
@@ -125,71 +125,15 @@ for f in $(git ls-files '*.js'); do node --check "$f" || exit 1; done
 ```
 
 For a Chrome Web Store upload, zip the extension files only (leave out `README.md`,
-`CHANGELOG.md` and `.gitignore`). Keep the manifest `description` at 132 characters or fewer.
+`CHANGELOG.md`, `LICENSE`, `.gitignore` and `.gitattributes`). Keep the manifest `description`
+at 132 characters or fewer.
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
----
+## License
 
-## বাংলা
+Released under the [MIT License](LICENSE).
 
-### DevForge কী
-
-DevForge হলো Chrome-এর সাইড প্যানেলে চলা একটি লোকাল-ফার্স্ট ওয়েব ডেভেলপমেন্ট ওয়ার্কবেঞ্চ।
-আপনি যে পেজে কাজ করছেন, তার পাশেই এটি থাকে। এতে আছে এলিমেন্ট ইন্সপেক্টর, নেটওয়ার্ক
-ইন্টারসেপশন, Core Web Vitals প্রোফাইলিং, DOM মিউটেশন টাইমলাইন, স্টোরেজ এডিটর এবং ডিজাইন টোকেন
-এক্সট্রাকশন। সবকিছু আপনার ব্রাউজারেই চলে। কোনো অ্যাকাউন্ট, সার্ভার বা অ্যানালিটিক্স নেই।
-
-DevForge Chrome DevTools-এর বিকল্প নয়। DevTools-এ যে কাজগুলো ধীরগতির, সেগুলো এটি সহজ করে।
-যেমন প্রক্সি ছাড়াই API রেসপন্স মক করা, কোন এলিমেন্টের কারণে LCP ধীর হলো তা দেখা, অথবা
-একটি সাইটের রংগুলোকে ডিজাইন টোকেনে রূপান্তর করা।
-
-### প্রধান ফিচার
-
-**নেটওয়ার্ক**
-- `fetch`, XHR, WebSocket, EventSource ও `sendBeacon`-এর লাইভ ক্যাপচার।
-- DevTools-এর মতো ফিল্টার: `status:4xx`, `method:post`, `domain:`, `larger-than:`, `is:mocked`।
-- ওয়াটারফল, টাইমিং ধাপ (DNS / TCP / TLS / TTFB / ডাউনলোড), Server-Timing এবং GraphQL অপারেশন শনাক্তকরণ।
-- রিকোয়েস্ট এডিট করে আবার পাঠানো, cURL / fetch / PowerShell হিসেবে কপি, এবং HAR 1.2 এক্সপোর্ট।
-- ইন্টারসেপশন রুল: দেরি যোগ করা, হেডার বসানো, ব্লক, মক রেসপন্স বা রিডাইরেক্ট। রুলগুলো
-  সেশনের পরেও থেকে যায়।
-
-**পারফরম্যান্স**
-- LCP, CLS, INP, FCP ও TTFB, প্রতিটির জন্য দায়ী এলিমেন্টসহ।
-- ধীর ইন্টারঅ্যাকশনকে input delay, processing ও presentation-এ ভাগ করে দেখানো।
-- Long Animation Frame স্ক্রিপ্ট অ্যাট্রিবিউশন এবং ফ্রেম-রেট প্রোফাইলার।
-- DOM মিউটেশন টাইমলাইন: আগের ও পরের মান, সবচেয়ে বেশি পরিবর্তিত এলিমেন্ট, এবং কিছুই বদলায় না
-  এমন অপ্রয়োজনীয় রাইট শনাক্তকরণ।
-
-**ডেভেলপার ওয়ার্কফ্লো**
-- React, Vue, Svelte ও Angular কম্পোনেন্ট ইন্সপেক্টর, undo/redo সহ দ্রুত এডিট।
-- localStorage, sessionStorage ও কুকি দেখা ও এডিট করা; IndexedDB ও Cache Storage দেখা।
-- ডিজাইন টোকেনকে CSS ভেরিয়েবল, SCSS, W3C JSON বা Tailwind থিম হিসেবে এক্সপোর্ট।
-- কম্পোনেন্ট এক্সপোর্ট, পুরো পেজের স্ক্রিনশট, অডিট এবং স্যান্ডবক্সড প্লেগ্রাউন্ড।
-- কমান্ড প্যালেট (`Ctrl+K`) এবং নিজের মতো বদলানো যায় এমন শর্টকাট।
-
-### আর্কিটেকচার সংক্ষেপে
-
-- **সার্ভিস ওয়ার্কার** (`background.js`) খুব ছোট রাখা হয়েছে। এটি শুধু প্যানেল খোলে আর কমান্ড
-  প্যানেলে পৌঁছে দেয়।
-- **পেজ এজেন্ট** (`agent.js`) পেজ লোডের সময় নয়, কেবল আপনি কোনো টুল ব্যবহার করলে তখনই ইনজেক্ট হয়।
-- **নেটওয়ার্ক ক্যাপচার** (`netcap.js`) পেজের MAIN world-এ চলে, তাই পেজের নিজের নেটওয়ার্ক কলগুলো
-  দেখতে ও বদলাতে পারে।
-- **প্লেগ্রাউন্ড** একটি আলাদা স্যান্ডবক্স পেজে চলে, যেখানে এক্সটেনশনের কোনো API-তে প্রবেশাধিকার নেই।
-- সেটিংস ও রুল থাকে `chrome.storage.local`-এ, আর ওয়ার্কস্পেস থাকে IndexedDB-তে। কোনো ডেটা
-  ব্রাউজারের বাইরে যায় না।
-
-### ইনস্টল করার নিয়ম
-
-1. এই রিপোজিটরি ক্লোন করুন।
-2. `chrome://extensions` খুলে **Developer mode** চালু করুন।
-3. **Load unpacked** ক্লিক করে রিপোজিটরির ফোল্ডারটি নির্বাচন করুন।
-4. টুলবার আইকন বা `Ctrl+Shift+Y` দিয়ে DevForge খুলুন। এলিমেন্ট বাছাই করতে `Ctrl+Shift+U` চাপুন।
-
-Chrome 116 বা তার নতুন ভার্সন প্রয়োজন।
-
-### গোপনীয়তা
-
-DevForge নিজে থেকে কোনো নেটওয়ার্ক রিকোয়েস্ট পাঠায় না। ব্যতিক্রম শুধু আপনার নিজের চালু করা কাজ:
-এক্সপোর্টের জন্য পেজের অ্যাসেট ডাউনলোড করা, অথবা আপনি নিজে Send চাপলে কোনো AI সাইটে প্রম্পট খোলা।
-সাইট অ্যাক্সেস ঐচ্ছিক এবং প্রতিটি সাইটের জন্য আলাদাভাবে চাওয়া হয়।
+Bundled third-party code, both MIT-licensed by their own authors:
+[Acorn](https://github.com/acornjs/acorn) 8.18.0 (`lib/acorn.js`) and
+[js-beautify](https://github.com/beautifier/js-beautify) (`lib/beautifier.min.js`).
