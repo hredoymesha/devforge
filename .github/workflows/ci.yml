@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Lint, checks, unit tests, backup tool
+    name: Lint, checks, unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -33,9 +33,6 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run verify
-      # The backup tool is part of the tests (test/backup.test.js). This also proves a fresh checkout
-      # can produce and verify its own backup; the archive is not uploaded anywhere.
-      - run: npm run backup -- --out "$RUNNER_TEMP/backup"
 
   e2e:
     name: Chromium end-to-end (extension loaded for real)
@@ -45,6 +42,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22

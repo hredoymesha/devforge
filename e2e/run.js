@@ -1216,7 +1216,7 @@ async function main() {
     /* ---------- regressions fixed in 4.1: before / after ---------- */
     console.log('\nRegressions (original 4.0.0 vs this working tree)');
     {
-      const old = await launch(prepareExtension(path.join(scratch, 'ext-old'), 'HEAD'), path.join(scratch, 'profile-old'));
+      const old = await launch(prepareExtension(path.join(scratch, 'ext-old'), 'v4.0.0'), path.join(scratch, 'profile-old'));
       try {
         // A pasted workflow with a javascript: navigation step. MV3's extension CSP already stops
         // the script from running, so this is hardening: the step is rejected up front.

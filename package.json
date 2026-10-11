@@ -11,8 +11,6 @@
     "verify": "npm run check && npm test",
     "verify:all": "npm run lint && npm run verify",
     "e2e": "node e2e/run.js",
-    "backup": "node scripts/backup.js create",
-    "backup:verify": "node scripts/backup.js verify",
     "a11y": "node e2e/a11y.js"
   },
   "engines": {
