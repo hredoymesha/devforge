@@ -11,6 +11,13 @@
     <header id="top">
       <h1 class="brand"><span class="logo" aria-hidden="true">⚒</span>DevForge</h1>
       <div id="target" class="target" title="The tab DevForge is working on">no tab</div>
+      <button
+        id="owner-chip"
+        class="owner-chip"
+        hidden
+        title="Owner mode is unlocked. Click to lock it now."
+        aria-label="Owner mode is unlocked. Activate to lock it now."
+      ></button>
       <button id="btn-pick" class="primary" title="Pick an element on the page (Esc to cancel)">
         <span aria-hidden="true">⌖</span> Pick
       </button>
@@ -18,14 +25,14 @@
         id="btn-palette"
         class="icon"
         title="Command palette (Ctrl+K)"
-        aria-label="Command palette"
+        aria-label="⌘K Command palette"
       >
         ⌘K
       </button>
       <button id="btn-theme" class="icon" title="Theme: system" aria-label="Switch theme">◐</button>
     </header>
-    <div class="tabbar">
-      <nav id="tabs" role="tablist" aria-label="Tools"></nav>
+    <nav class="tabbar" aria-label="Panels">
+      <div id="tabs" role="tablist" aria-label="Tools"></div>
       <button
         id="tabs-more"
         class="tabs-more"
@@ -44,14 +51,16 @@
         <span id="tabs-more-count" class="tabs-more-count" aria-hidden="true"></span>
       </button>
       <div id="tabs-menu" class="menu" role="menu" aria-label="Hidden panels" hidden></div>
-    </div>
+    </nav>
     <div id="status" role="status" aria-live="polite" hidden>
       <span id="status-text"></span>
       <button id="status-close" class="icon ghost" aria-label="Dismiss message" title="Dismiss">
         ✕
       </button>
     </div>
-    <main id="view" role="tabpanel" tabindex="-1"></main>
+    <main>
+      <div id="view" role="tabpanel" tabindex="-1" aria-label="Selected panel"></div>
+    </main>
     <div id="palette" hidden>
       <div class="pal-box" role="dialog" aria-modal="true" aria-label="Command palette">
         <input
@@ -72,12 +81,21 @@
     <script src="lib/gen.js"></script>
     <script src="lib/validate.js"></script>
     <script src="lib/ai.js"></script>
+    <script src="lib/owner.js"></script>
+    <script src="lib/wsseal.js"></script>
     <script src="lib/store.js"></script>
     <script src="lib/site.js"></script>
     <script src="lib/safe.js"></script>
+    <script src="lib/netguard.js"></script>
+    <script src="lib/net.js"></script>
+    <script src="lib/secprobe.js"></script>
+    <script src="lib/secscan.js"></script>
+    <script src="lib/secreport.js"></script>
     <script src="lib/har.js"></script>
     <script src="lib/tokens.js"></script>
     <script src="panel/core.js"></script>
+    <script src="panel/icons.js"></script>
+    <script src="panel/home.js"></script>
     <script src="panel/inspect.js"></script>
     <script src="panel/css.js"></script>
     <script src="panel/export.js"></script>
@@ -89,6 +107,9 @@
     <script src="panel/storage.js"></script>
     <script src="panel/tokens.js"></script>
     <script src="panel/audit.js"></script>
+    <script src="panel/securityrun.js"></script>
+    <script src="panel/security.js"></script>
+    <script src="panel/owner.js"></script>
     <script src="panel/data.js"></script>
     <script src="panel/ai.js"></script>
     <script src="panel/playground.js"></script>

@@ -6,7 +6,7 @@
 (() => {
   if (window.__DF && window.__DF.version) return;
 
-  const AGENT_VERSION = 4; // must match AGENT_VERSION in panel/core.js
+  const AGENT_VERSION = 9; // must match AGENT_VERSION in panel/core.js
   const MAX_NODES = 20000;
   const state = {
     selected: null,
@@ -35,6 +35,36 @@
   };
   const prov = (value, provenance, extra) => ({ value, provenance, ...(extra || {}) });
 
+  // Every url(...) reference in a CSS string, found in one pass with bounded look-ahead. The regexes
+  // this replaces used a lazy `.*?` with a back-reference and went quadratic on text with many
+  // unclosed "url(" (80 KB took seconds), which a hostile page could use to freeze its own tab.
+  function cssUrls(text, max = 400) {
+    const out = [];
+    const src = String(text).slice(0, 400000);
+    const low = src.toLowerCase();
+    let i = 0;
+    while (out.length < max && (i = low.indexOf('url(', i)) !== -1) {
+      let j = i + 4;
+      while (j < src.length && src.charCodeAt(j) <= 32 && j - i < 64) j++;
+      const q = src[j] === '"' || src[j] === "'" ? src[j] : '';
+      const window = src.slice(j + (q ? 1 : 0), j + (q ? 1 : 0) + 2050);
+      const end = window.indexOf(q || ')');
+      if (end === -1 || end > 2048) {
+        i += 4;
+        continue;
+      }
+      const value = window.slice(0, end).trim();
+      let close = j + (q ? 1 : 0) + end + (q ? 1 : 0);
+      while (close < src.length && src.charCodeAt(close) <= 32 && close - i < 4200) close++;
+      if (src[close] !== ')') {
+        i += 4;
+        continue;
+      }
+      out.push({ value, start: i, end: close + 1 });
+      i = close + 1;
+    }
+    return out;
+  }
   function parentOf(el) {
     if (!el) return null;
     if (el.parentElement) return el.parentElement;
@@ -93,8 +123,11 @@
       'href',
     ]) {
       const v = el.getAttribute && el.getAttribute(a);
-      if (!v || v.length > 80) continue;
-      const sel = `${tag}[${a}="${v.replace(/"/g, '\\"')}"]`;
+      // Backslash is escaped as well as the quote (an unescaped one lets the value close the string),
+      // and values with control characters are skipped rather than quoted.
+      // eslint-disable-next-line no-control-regex -- control characters are exactly what is being rejected
+      if (!v || v.length > 80 || /[\u0000-\u001f\u007f]/.test(v)) continue;
+      const sel = `${tag}[${a}="${v.replace(/[\\"]/g, '\\$&')}"]`;
       if (unique(sel)) {
         const base =
           a.startsWith('data-test') || a === 'data-cy' || a === 'data-qa'
@@ -223,7 +256,8 @@
 
   // picker
   function ensureOverlay() {
-    if (state.overlay) return;
+    // The page can remove the host element; build a new one instead of drawing into a detached node.
+    if (state.overlay && state.overlay.isConnected) return;
     const host = document.createElement('div');
     host.id = '__df_overlay_host';
     host.style.cssText =
@@ -280,19 +314,22 @@
   window.addEventListener('scroll', onViewportChange, { capture: true, passive: true });
   window.addEventListener('resize', onViewportChange, { passive: true });
   // Remember the last right-clicked element for the "Inspect with DevForge" context menu entry.
+  // Page scripts can dispatch synthetic events into this world's listeners; only real user input may
+  // steer what the inspector selects or cancels.
   const onContextMenu = (e) => {
+    if (!e.isTrusted) return;
     const path = e.composedPath ? e.composedPath() : [];
     const el = path.find(isEl) || e.target;
     if (isEl(el)) state.lastContext = { el, t: Date.now() };
   };
   document.addEventListener('contextmenu', onContextMenu, true);
   const onMove = (e) => {
-    if (!state.picking) return;
+    if (!state.picking || !e.isTrusted) return;
     const el = deepestAt(e.clientX, e.clientY);
     if (el && el !== state.overlay) drawBox(el);
   };
   const onClick = (e) => {
-    if (!state.picking) return;
+    if (!state.picking || !e.isTrusted) return;
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
@@ -309,11 +346,13 @@
     }
   };
   const onKey = (e) => {
-    if (state.picking && e.key === 'Escape') {
+    if (state.picking && e.isTrusted && e.key === 'Escape') {
       stopPick();
       try {
         chrome.runtime.sendMessage({ type: 'df:pick-cancelled' });
-      } catch (_) {}
+      } catch (_) {
+        /* panel closed */
+      }
     }
   };
   const blockers = ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'auxclick', 'contextmenu'];
@@ -345,13 +384,14 @@
     return { ok: true };
   }
   function select(el) {
+    if (!isEl(el)) throw new Error('That is not an element. Pick an element, not text or an attribute.');
     state.selected = el;
     handleOf(el);
     drawBox(el, 'selected');
   }
 
   function selectBySelector(sel, kind) {
-    let el = null;
+    let el;
     if (kind === 'xpath')
       el = document.evaluate(
         sel,
@@ -400,9 +440,10 @@
   function children(h) {
     const el = h ? target(h) : document.documentElement;
     // DevForge's own overlay/helper nodes ("__df_" ids) are not part of the page.
-    const out = [...el.children].filter((c) => !/^__df_/.test(c.id)).map(nodeBrief);
+    // Cap before building rows: each row also registers a handle, and a page can have a million children.
+    const out = [...el.children].filter((c) => !/^__df_/.test(c.id)).slice(0, 501).map(nodeBrief);
     let shadow = null;
-    if (el.shadowRoot) shadow = [...el.shadowRoot.children].map(nodeBrief);
+    if (el.shadowRoot) shadow = [...el.shadowRoot.children].slice(0, 500).map(nodeBrief);
     let frame = null;
     if (el.tagName === 'IFRAME') {
       try {
@@ -410,7 +451,7 @@
         frame = d
           ? prov('accessible', 'observed')
           : prov('cross-origin iframe: content not accessible from this context', 'unavailable');
-        if (d) out.push(...[...d.documentElement.children].map(nodeBrief));
+        if (d) for (const c of [...d.documentElement.children].slice(0, 500)) out.push(nodeBrief(c));
       } catch (_) {
         frame = prov('cross-origin iframe', 'unavailable');
       }
@@ -770,12 +811,11 @@
         if (hr) out.push({ type: 'svg-use', url: hr });
       }
       const bg = getComputedStyle(n).backgroundImage;
-      const m = bg && bg.match(/url\((['"]?)(.*?)\1\)/g);
-      if (m)
-        m.forEach((u) =>
+      if (bg)
+        cssUrls(bg, 20).forEach((u) =>
           out.push({
             type: 'background-image',
-            url: absUrl(u.replace(/^url\((['"]?)|(['"]?)\)$/g, '')),
+            url: absUrl(u.value),
           })
         );
     }
@@ -791,6 +831,33 @@
   }
 
   // CSS engine
+  // Splits a selector list at top-level commas in one linear pass (commas inside (), [] or quotes
+  // stay). The regex it replaces rescanned to the end of the text for every comma, so a rule with a
+  // very long selector list could stall the tab. Anything over 4 KB is not matched at all.
+  function splitSelectors(sel) {
+    const text = String(sel);
+    if (text.length > 4000) return [];
+    const out = [];
+    let depth = 0;
+    let quote = '';
+    let start = 0;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (quote) {
+        if (c === '\\') i++;
+        else if (c === quote) quote = '';
+      } else if (c === '"' || c === "'") quote = c;
+      else if (c === '(' || c === '[') depth++;
+      else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
+      else if (c === ',' && depth === 0) {
+        out.push(text.slice(start, i));
+        start = i + 1;
+      }
+    }
+    out.push(text.slice(start));
+    return out;
+  }
+
   function specificity(sel) {
     // [a,b,c] for a single complex selector; strips :not()/:is() argument handling approximately
     let a = 0,
@@ -915,7 +982,7 @@
           order++;
           if (rule.type === 1) {
             let hit = null;
-            const sels = rule.selectorText.split(/,(?![^(]*\))/).map((s) => s.trim());
+            const sels = splitSelectors(rule.selectorText).map((s) => s.trim());
             for (const s of sels) {
               if (safe(() => el.matches(s), false)) {
                 const sp = specificity(s);
@@ -956,7 +1023,9 @@
                 : rule.type === 12
                   ? '@supports ' + rule.conditionText
                   : rule.cssText.split('{')[0].trim();
-            walkRules(rule.cssRules, [...ctx, label + (ok ? '' : ' (not currently active)')]);
+            // An @import rule has no cssRules of its own; its rules live in the imported sheet.
+            const inner = rule.type === 3 ? safe(() => rule.styleSheet.cssRules, null) : rule.cssRules;
+            if (inner) walkRules(inner, [...ctx, label + (ok ? '' : ' (not currently active)')]);
           }
         }
       };
@@ -1102,7 +1171,9 @@
         if (fams.includes(f.family.replace(/^["']|["']$/g, '')) && f.status === 'loaded')
           loaded.push({ family: f.family, weight: f.weight, style: f.style });
       });
-    } catch (_) {}
+    } catch (_) {
+      /* document.fonts can be unavailable; return what was collected */
+    }
     return { stack: fams, fontFaceRules: faces, loadedFaces: loaded };
   }
   function keyframesFor(names) {
@@ -1117,7 +1188,7 @@
         continue;
       }
       for (const r of rules)
-        if (r.type === 7 && want.includes(r.name)) out.push({ name: r.name, css: r.cssText });
+        if (r.type === 7 && want.includes(r.name)) out.push({ name: r.name, css: clip(r.cssText, 5000) });
     }
     return out;
   }
@@ -1132,6 +1203,8 @@
 
   // live edit with undo/redo + change tracking
   function ensureStyleEl() {
+    // The page can remove the override sheet; put the same element back so edits keep applying.
+    if (state.styleEl && !state.styleEl.isConnected) document.documentElement.appendChild(state.styleEl);
     if (!state.styleEl) {
       state.styleEl = document.createElement('style');
       state.styleEl.id = '__df_overrides';
@@ -1247,7 +1320,9 @@
         selector: sel,
       };
     else if (spec.kind === 'html')
-      op = { kind: 'html', h, before: el.innerHTML, after: spec.value, selector: sel };
+      // Assigning innerHTML from a string would run event-handler attributes, which the attr kind
+      // refuses. No panel needs it, so it is not offered.
+      throw new Error('Replacing HTML is not supported; edit text or attributes instead.');
     else if (spec.kind === 'attr') {
       const name = String(spec.prop || '').trim();
       if (!/^[^\s"'>/=]+$/.test(name)) throw new Error('Invalid attribute name.');
@@ -1323,9 +1398,10 @@
     return { undo: state.undo.length, redo: state.redo.length, log: state.changeLog.slice(-100) };
   }
   function undo() {
-    const op = state.undo.pop();
+    const op = state.undo[state.undo.length - 1];
     if (!op) throw new Error('Nothing to undo');
-    applyOp(op, 'undo');
+    applyOp(op, 'undo'); // if this throws (the element is gone) the op stays on the stack
+    state.undo.pop();
     state.redo.push(op);
     state.changeLog.push({
       t: Date.now(),
@@ -1336,9 +1412,10 @@
     return history();
   }
   function redo() {
-    const op = state.redo.pop();
+    const op = state.redo[state.redo.length - 1];
     if (!op) throw new Error('Nothing to redo');
     applyOp(op, 'do');
+    state.redo.pop();
     state.undo.push(op);
     return history();
   }
@@ -1347,7 +1424,9 @@
       const op = state.undo.pop();
       try {
         applyOp(op, 'undo');
-      } catch (_) {}
+      } catch (_) {
+        /* the element is gone, so there is nothing left to revert */
+      }
     }
     state.redo.length = 0;
     if (state.styleEl) state.styleEl.textContent = '';
@@ -1355,22 +1434,24 @@
     return history();
   }
   function patch() {
+    // Page-controlled text goes into comments; it must not be able to close one and add CSS.
+    const cm = (v) => String(v == null ? '' : v).replace(/\*\//g, '* /').replace(/[\r\n]+/g, ' ');
     const lines = [];
     for (const op of state.undo) {
       if (op.kind === 'style')
         lines.push(
-          `${op.selector} { ${op.prop}: ${op.after}; } /* was: ${op.before || '(unset)'} */`
+          `${cm(op.selector)} { ${cm(op.prop)}: ${cm(op.after)}; } /* was: ${cm(op.before) || '(unset)'} */`
         );
       else if (op.kind === 'css-rule') lines.push('/* override stylesheet */\n' + op.after);
       else if (op.kind === 'text')
         lines.push(
-          `/* text @ ${op.selector}\n--- ${clip(op.before, 200)}\n+++ ${clip(op.after, 200)} */`
+          `/* text @ ${cm(op.selector)}\n--- ${cm(clip(op.before, 200))}\n+++ ${cm(clip(op.after, 200))} */`
         );
       else if (op.kind === 'attr')
-        lines.push(`/* attr ${op.prop} @ ${op.selector}: ${op.before} -> ${op.after} */`);
-      else if (op.kind === 'remove') lines.push(`/* removed ${op.selector} */`);
-      else if (op.kind === 'hide') lines.push(`${op.selector} { visibility: hidden; }`);
-      else if (op.kind === 'html') lines.push(`/* innerHTML replaced @ ${op.selector} */`);
+        lines.push(`/* attr ${cm(op.prop)} @ ${cm(op.selector)}: ${cm(op.before)} -> ${cm(op.after)} */`);
+      else if (op.kind === 'remove') lines.push(`/* removed ${cm(op.selector)} */`);
+      else if (op.kind === 'hide') lines.push(`${cm(op.selector)} { visibility: hidden; }`);
+      else if (op.kind === 'html') lines.push(`/* innerHTML replaced @ ${cm(op.selector)} */`);
     }
     return { count: state.undo.length, patch: lines.join('\n') };
   }
@@ -1378,6 +1459,7 @@
     // Real :hover/:focus forcing needs the debugger permission, which we don't ask for.
     // Instead, copy the matching :state declarations into the override sheet.
     const el = target(h);
+    if (!['hover', 'focus', 'active', 'focus-visible', 'focus-within'].includes(st)) throw new Error('Unsupported state: ' + st);
     const pseudo = ':' + st;
     let css = '';
     for (const sheet of allSheets(document)) {
@@ -1447,7 +1529,7 @@
           : prov(minified, 'inferred'),
         sourceMapComment:
           !src && /\/\/[#@] sourceMappingURL=/.test(code)
-            ? (code.match(/sourceMappingURL=(\S+)/) || [])[1]
+            ? clip((code.match(/sourceMappingURL=(\S{1,2000})/) || [])[1], 300)
             : null,
         preview: src ? null : clip(code.trim(), 300),
         dynamic: !!s.__dfDyn,
@@ -1863,11 +1945,23 @@
       if (u && /^http:\/\//i.test(u) && location.protocol === 'https:')
         add('warn', 'http-url', 'http:// URL in markup', `<${lc(el.tagName)}> ${clip(u, 120)}`);
       if (u && /^\s*javascript:/i.test(u))
+        // eslint-disable-next-line no-script-url -- this is the pattern for DETECTING javascript: addresses, not one
         add('warn', 'javascript-url', 'javascript: URL', `<${lc(el.tagName)}> ${clip(u, 120)}`);
     });
-    document.querySelectorAll('a[target=_blank]').forEach((a) => {
-      if (!/noopener|noreferrer/.test(a.rel))
-        add('info', 'noopener', 'target=_blank without rel=noopener', clip(a.href, 100));
+    // Browsers (Chrome 88+, Firefox 79+, Safari 12.1+) give target=_blank links noopener by default,
+    // so a missing rel=noopener on _blank is no longer a finding. The opener is still exposed to a
+    // cross-origin page when rel=opener turns it back on, or when the target is a named window
+    // (target="somename"), which never got the implicit protection.
+    document.querySelectorAll('a[target][href]').forEach((a) => {
+      const dest = safe(() => new URL(a.href, location.href));
+      if (!dest || !/^https?:$/.test(dest.protocol) || dest.origin === location.origin) return;
+      const rel = (a.getAttribute('rel') || '').toLowerCase().split(/\s+/);
+      const target = (a.getAttribute('target') || '').toLowerCase();
+      if (rel.includes('noopener') || rel.includes('noreferrer')) return;
+      if (rel.includes('opener') && target !== '_self' && target !== '_parent' && target !== '_top')
+        add('warn', 'opener-exposed', 'rel=opener gives the linked page window.opener', clip(a.href, 100));
+      else if (!['_blank', '_self', '_parent', '_top'].includes(target))
+        add('warn', 'named-target-opener', 'Named target without rel=noopener', clip(a.href, 100));
     });
     let inl = 0;
     document.querySelectorAll('*').forEach((el) => {
@@ -1942,54 +2036,59 @@
     };
   }
 
-  async function fetchHeaders() {
-    const r = await fetch(location.href, {
-      method: 'HEAD',
-      credentials: 'same-origin',
-      cache: 'no-store',
+  /*
+   * Saved files must not carry the page's active content. This is the one place that decides what
+   * that means, used by every export that offers a script-free mode:
+   *  - on* handler attributes, srcdoc, <meta http-equiv=refresh>, <object>, <embed> are removed;
+   *  - javascript:, vbscript: and data:text/html addresses are replaced, after dropping the control
+   *    characters and spaces the URL parser ignores ("java\tscript:" is still javascript:);
+   *  - end tags inside raw-text elements are broken up, because a page script can build a <noscript>
+   *    whose text is "</noscript><img onerror=...>" and outerHTML writes that text out unescaped.
+   */
+  const URL_ATTRS = /^(href|src|action|formaction|xlink:href|data|poster|ping|background|cite|longdesc|manifest)$/i;
+  // eslint-disable-next-line no-control-regex -- the URL parser ignores these characters, so they are removed before testing the scheme
+  const deadlyUrl = (v) => /^(javascript|vbscript|data:text\/html)/i.test(String(v).replace(/[\u0000-\u0020\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff]+/g, ''));
+  const RAW_TEXT = 'noscript,xmp,iframe,noembed,noframes,plaintext';
+  function escapeRawText(root) {
+    root.querySelectorAll(RAW_TEXT).forEach((n) => {
+      for (const c of n.childNodes)
+        if (c.nodeType === 3) c.nodeValue = c.nodeValue.replace(/<\/(noscript|xmp|iframe|noembed|noframes|plaintext|style|script)/gi, '<\\/$1');
     });
-    const wanted = [
-      'content-security-policy',
-      'strict-transport-security',
-      'x-frame-options',
-      'x-content-type-options',
-      'referrer-policy',
-      'permissions-policy',
-      'cross-origin-opener-policy',
-      'cross-origin-resource-policy',
-      'server',
-      'content-type',
-    ];
-    const h = {};
-    wanted.forEach((k) => {
-      h[k] = r.headers.get(k);
+  }
+  function neutralizeTree(root) {
+    root.querySelectorAll('object,embed,meta[http-equiv]').forEach((n) => {
+      if (n.localName !== 'meta' || /refresh/i.test(n.getAttribute('http-equiv'))) n.remove();
     });
-    const issues = [];
-    if (!h['content-security-policy']) issues.push('No Content-Security-Policy header.');
-    if (location.protocol === 'https:' && !h['strict-transport-security'])
-      issues.push('No Strict-Transport-Security header.');
-    if (!h['x-content-type-options']) issues.push('No X-Content-Type-Options: nosniff.');
-    if (!h['x-frame-options'] && !(h['content-security-policy'] || '').includes('frame-ancestors'))
-      issues.push('No clickjacking protection (X-Frame-Options / frame-ancestors).');
-    return {
-      status: r.status,
-      headers: h,
-      issues,
-      provenance: 'observed (HEAD request to the page URL, same-origin)',
-    };
+    [root, ...root.querySelectorAll('*')].forEach((n) => {
+      for (const a of [...n.attributes]) {
+        if (/^on/i.test(a.name) || /^srcdoc$/i.test(a.name)) n.removeAttribute(a.name);
+        else if (URL_ATTRS.test(a.name) && deadlyUrl(a.value)) n.setAttribute(a.name, '#');
+      }
+    });
+    escapeRawText(root);
   }
 
   // Component export collection
   const SKIP_URL = /^(data:|blob:|javascript:|mailto:|tel:|#|about:)/i;
   function absCssUrls(text, base) {
-    return text.replace(/url\(\s*(['"]?)(.*?)\1\s*\)/g, (m, q, u) => {
-      if (!u || SKIP_URL.test(u)) return m;
-      try {
-        return 'url("' + new URL(u, base).href + '")';
-      } catch (_) {
-        return m;
+    const src = String(text);
+    let out = '';
+    let at = 0;
+    for (const m of cssUrls(src, 2000)) {
+      out += src.slice(at, m.start);
+      at = m.end;
+      const whole = src.slice(m.start, m.end);
+      if (!m.value || SKIP_URL.test(m.value)) {
+        out += whole;
+        continue;
       }
-    });
+      try {
+        out += 'url("' + new URL(m.value, base).href + '")';
+      } catch (_) {
+        out += whole; // an address the browser cannot parse is left exactly as the page wrote it
+      }
+    }
+    return out + src.slice(at);
   }
   function absolutizeTree(root) {
     const attrs = ['src', 'href', 'poster', 'data-src', 'action'];
@@ -2000,7 +2099,9 @@
         if (v && !SKIP_URL.test(v)) {
           try {
             n.setAttribute(a, new URL(v, document.baseURI).href);
-          } catch (_) {}
+          } catch (_) {
+            /* an unparseable address is left exactly as the page wrote it */
+          }
         }
       }
       const ss = n.getAttribute && n.getAttribute('srcset');
@@ -2046,7 +2147,7 @@
         .forEach((f) => usedFamilies.add(f.trim().replace(/^["']|["']$/g, '')));
     });
     const matchesAny = (sel) => {
-      for (const part of sel.split(/,(?![^(]*\))/)) {
+      for (const part of splitSelectors(sel)) {
         const s =
           part
             .trim()
@@ -2114,7 +2215,7 @@
       const part = walk(r, false);
       if (part && !ruleSeen.has(part)) {
         ruleSeen.add(part);
-        css += `/* source: ${sheetLabel(sheet, i)} */\n${part}\n`;
+        css += `/* source: ${sheetLabel(sheet, i).replace(/\*\//g, '* /').replace(/[\r\n]+/g, ' ')} */\n${part}\n`;
       }
     });
     // :root variables used
@@ -2139,18 +2240,8 @@
     clone.querySelectorAll('style').forEach((st) => {
       st.textContent = st.textContent.replace(/</g, '\\3c ');
     });
-    if (opts.stripHandlers) {
-      [clone, ...clone.querySelectorAll('*')].forEach((n) => {
-        for (const a of [...n.attributes]) {
-          if (/^on/i.test(a.name)) n.removeAttribute(a.name);
-          else if (
-            /^(href|src|action|formaction|xlink:href)$/i.test(a.name) &&
-            /^\s*javascript:/i.test(a.value)
-          )
-            n.setAttribute(a.name, '#');
-        }
-      });
-    }
+    if (opts.stripHandlers) neutralizeTree(clone);
+    else escapeRawText(clone); // the end-tag break-out works whether or not handlers are kept
     // scripts in page that mention the component's id/classes (inferred relation)
     const keys = new Set([el.id, ...el.classList].filter(Boolean));
     nodes.slice(0, 400).forEach((n) => {
@@ -2160,7 +2251,7 @@
     document.querySelectorAll('script:not([src])').forEach((s, i) => {
       const c = s.textContent || '';
       const hit = [...keys].filter((k) => k.length > 2 && c.includes(k));
-      if (hit.length)
+      if (hit.length && related.length < 20)
         related.push({
           kind: 'inline',
           index: i,
@@ -2228,6 +2319,11 @@
   function defaultsFor(tag, ns) {
     const key = ns + ':' + tag;
     if (defaultCache.has(key)) return defaultCache.get(key);
+    // The page can remove the helper frame; build a fresh one (and drop cached values from the old).
+    if (defaultsFrame && (!defaultsFrame.isConnected || !defaultsFrame.contentDocument)) {
+      defaultsFrame = null;
+      defaultCache.clear();
+    }
     if (!defaultsFrame) {
       defaultsFrame = document.createElement('iframe');
       defaultsFrame.id = '__df_defaults';
@@ -2344,12 +2440,16 @@
     let list = [];
     try {
       list = el.getAnimations({ subtree: false });
-    } catch (_) {}
+    } catch (_) {
+      /* getAnimations is not available in every document */
+    }
     for (const a of list) {
       let frames = [];
       try {
         frames = a.effect.getKeyframes();
-      } catch (_) {}
+      } catch (_) {
+        /* getKeyframes can throw for some effects */
+      }
       const isCSSAnim = a.constructor && a.constructor.name === 'CSSAnimation';
       for (const f of frames)
         for (const k of Object.keys(f)) {
@@ -2404,8 +2504,8 @@
       });
       const attrs = {};
       for (const a of el.attributes) {
-        if (/^(class|style|id|data-df.*)$/.test(a.name) || /^on/i.test(a.name)) continue;
-        attrs[a.name] = a.value;
+        if (/^(class|style|id|data-df.*)$/.test(a.name) || /^on/i.test(a.name) || /^(srcdoc|formaction)$/i.test(a.name)) continue;
+        attrs[a.name] = URL_ATTRS.test(a.name) && deadlyUrl(a.value) ? '#' : a.value;
       }
       if (tag === 'img') {
         attrs.src = el.currentSrc || el.src;
@@ -2413,8 +2513,7 @@
         delete attrs.sizes;
         delete attrs.loading;
       }
-      if (attrs.href && /^\s*javascript:/i.test(attrs.href)) attrs.href = '#';
-      else if (tag === 'a' && attrs.href) attrs.href = absUrl(attrs.href);
+      if (tag === 'a' && attrs.href && attrs.href !== '#') attrs.href = absUrl(attrs.href);
       const node = { tag, ns, attrs, style: declared, children: [], id: el.id || null, pseudo: {} };
       for (const p of ['::before', '::after']) {
         const ps = getComputedStyle(el, p);
@@ -2470,6 +2569,7 @@
       .join('\n');
     // root needs width constraints
     const r = root.getBoundingClientRect();
+    if (!rootNode) throw new Error('This element cannot be recreated (script, style, link, meta, noscript and template are skipped). Select a visible element.');
     rootNode.style.width = getComputedStyle(root).width; // used content width, consistent with the carried box-sizing
     // assign class names
     const uniq = new Map();
@@ -2609,9 +2709,13 @@
                     animated.add(x.replace(/[A-Z]/g, (m) => '-' + m.toLowerCase()))
                   )
                 );
-            } catch (_) {}
+            } catch (_) {
+              /* a keyframe set the browser cannot read is skipped */
+            }
           });
-        } catch (_) {}
+        } catch (_) {
+          /* an animation the browser cannot read is skipped */
+        }
         props
           .filter(
             (p) =>
@@ -2771,9 +2875,11 @@
   function resourceMap() {
     const nodes = [],
       edges = [];
+    const known = new Set();
     const add = (id, type, label, extra) => {
-      if (!nodes.find((n) => n.id === id))
-        nodes.push({ id, type, label: clip(label, 70), ...(extra || {}) });
+      if (known.has(id)) return;
+      known.add(id);
+      nodes.push({ id, type, label: clip(label, 70), ...(extra || {}) });
     };
     const edge = (a, b, rel) => edges.push({ from: a, to: b, rel });
     add('page', 'page', location.href);
@@ -2819,22 +2925,20 @@
             add(u, 'css', u);
             edge(from, u, '@import');
           } else if (r.type === 5) {
-            const m = r.style.getPropertyValue('src').match(/url\((['"]?)(.*?)\1\)/);
-            if (m) {
-              const u = new URL(m[2], sheet.href || document.baseURI).href;
+            const first = cssUrls(r.style.getPropertyValue('src'), 1)[0];
+            const u = first && safe(() => new URL(first.value, sheet.href || document.baseURI).href);
+            if (u) {
               add(u, 'font', u);
               edge(from, u, '@font-face');
             }
           } else if (r.type === 1) {
-            const m = r.style.cssText.match(/url\((['"]?)(.*?)\1\)/g);
-            if (m)
-              m.slice(0, 3).forEach((x) => {
-                const raw = x.replace(/^url\((['"]?)|(['"]?)\)$/g, '');
-                if (raw.startsWith('data:')) return;
-                const u = new URL(raw, sheet.href || document.baseURI).href;
-                add(u, typeOf(u) === 'font' ? 'font' : 'image', u);
-                edge(from, u, 'url()');
-              });
+            cssUrls(r.style.cssText, 3).forEach((x) => {
+              if (x.value.startsWith('data:')) return;
+              const u = safe(() => new URL(x.value, sheet.href || document.baseURI).href);
+              if (!u) return;
+              add(u, typeOf(u) === 'font' ? 'font' : 'image', u);
+              edge(from, u, 'url()');
+            });
           } else if (r.cssRules) walk(r.cssRules);
         }
       };
@@ -2856,7 +2960,10 @@
     });
     const origin = location.origin;
     nodes.forEach((n) => {
-      if (/^https?:/.test(n.id)) n.external = new URL(n.id).origin !== origin;
+      if (/^https?:/.test(n.id)) {
+        const o = safe(() => new URL(n.id).origin); // an unparseable address (e.g. http://[ ) stays unclassified
+        if (o) n.external = o !== origin;
+      }
     });
     return {
       nodes: nodes.slice(0, 1500),
@@ -2879,7 +2986,9 @@
         let ok = false;
         try {
           ok = !!f.contentDocument;
-        } catch (_) {}
+        } catch (_) {
+          /* a cross-origin frame cannot be read; it is reported as not accessible */
+        }
         return { src: f.src, accessible: ok };
       }),
       shadowHosts: countShadow(),
@@ -2905,6 +3014,10 @@
     clone.querySelectorAll('style').forEach((st) => {
       st.textContent = st.textContent.replace(/<\/style/gi, '\\3c /style');
     });
+    // Without scripts the saved file should hold no active content at all; with scripts kept the
+    // user asked for the page as it is, but raw-text end tags are still broken up.
+    if (keepScripts) escapeRawText(clone);
+    else neutralizeTree(clone);
     return '<!DOCTYPE html>\n' + clone.outerHTML;
   }
 
@@ -2964,8 +3077,16 @@
 
   // Workflow recording / replay
   const rec = { on: false, steps: [], last: 0 };
+  // Values that must not be written into a recorded workflow: passwords, hidden fields, one-time
+  // codes, card numbers, and fields whose name suggests a secret.
+  const secretField = (el) =>
+    /^(password|hidden)$/i.test(el.type || '') ||
+    /(^|\s)(cc-|one-time-code|new-password|current-password)/i.test(el.getAttribute('autocomplete') || '') ||
+    /(pass|pwd|secret|token|otp|cvv|cvc|card|ssn|iban|api.?key)/i.test((el.getAttribute('name') || '') + ' ' + (el.id || ''));
   const recHandler = (e) => {
-    if (!rec.on) return;
+    // Only real user input is recorded; a page script could otherwise plant steps with its own
+    // selectors and values.
+    if (!rec.on || !e.isTrusted) return;
     const el = e.target;
     if (!isEl(el) || el.id === '__df_overlay_host') return;
     const sels = selectorsFor(el);
@@ -2978,8 +3099,9 @@
     else if (e.type === 'change' || e.type === 'input') {
       if (e.type === 'input' && !/^(INPUT|TEXTAREA)$/.test(el.tagName)) return;
       step.action = 'type';
-      step.value = /password/i.test(el.type) ? '' : el.value;
-      if (/password/i.test(el.type)) step.note = 'password value not recorded';
+      const secret = secretField(el);
+      step.value = secret ? '' : el.value;
+      if (secret) step.note = 'value not recorded (looks like a secret)';
       const last = rec.steps[rec.steps.length - 1];
       if (last && last.action === 'type' && last.selector === step.selector) {
         last.value = step.value;
@@ -3027,10 +3149,28 @@
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
+  const WORKFLOW = { running: false, cancelled: false, MAX_STEPS: 200, MAX_MS: 10 * 60 * 1000 };
   async function runWorkflow(steps) {
+    if (!Array.isArray(steps)) throw new Error('A workflow is a list of steps.');
+    if (steps.length > WORKFLOW.MAX_STEPS) throw new Error('A workflow can have at most ' + WORKFLOW.MAX_STEPS + ' steps.');
+    if (WORKFLOW.running) throw new Error('A workflow is already running on this page.');
+    WORKFLOW.running = true;
+    WORKFLOW.cancelled = false;
+    const t0 = Date.now();
+    try {
+      return await runSteps(steps, t0);
+    } finally {
+      WORKFLOW.running = false;
+    }
+  }
+  async function runSteps(steps, t0) {
     const log = [];
     const data = {};
     for (let i = 0; i < steps.length; i++) {
+      if (WORKFLOW.cancelled || Date.now() - t0 > WORKFLOW.MAX_MS) {
+        log.push({ i, ok: false, action: 'stop', error: WORKFLOW.cancelled ? 'Cancelled.' : 'Stopped: the run took longer than 10 minutes.' });
+        return { log, data, failedAt: i };
+      }
       const s = steps[i];
       try {
         if (s.action === 'wait') {
@@ -3047,13 +3187,18 @@
           continue;
         }
         if (s.action === 'navigate') {
+          // A workflow can be pasted from anywhere. Assigning a javascript: URL to location would
+          // run it as page script, so only web addresses are followed.
+          const dest = safe(() => new URL(s.url, location.href));
+          if (!dest || !/^https?:$/.test(dest.protocol))
+            throw new Error('Navigate only follows http and https addresses.');
           log.push({
             i,
             ok: true,
             action: 'navigate',
             note: 'navigation ends this run; re-run from the next step',
           });
-          location.href = s.url;
+          location.href = dest.href;
           return { log, data, interrupted: true };
         }
         const el = resolveSel(s.selector, s.alt);
@@ -3070,7 +3215,7 @@
             : el.textContent.trim().replace(/\s+/g, ' ');
         } else throw new Error('Unknown action ' + s.action);
         log.push({ i, ok: true, action: s.action, selector: s.selector });
-        await sleep(+s.delay || 80);
+        await sleep(Math.min(Math.max(+s.delay || 80, 0), 30000));
       } catch (e) {
         log.push({ i, ok: false, action: s.action, error: e.message });
         if (!s.continueOnError) return { log, data, failedAt: i };
@@ -3193,9 +3338,7 @@
       if (v && !v.startsWith('#')) add(v.split('#')[0], 'image', 'svg use');
     });
     document.querySelectorAll('[style*="url("]').forEach((n) => {
-      (n.getAttribute('style').match(/url\(\s*['"]?([^'")]+)/g) || []).forEach((m) =>
-        add(m.replace(/^url\(\s*['"]?/, ''), null, 'style attr')
-      );
+      cssUrls(n.getAttribute('style'), 50).forEach((m) => add(m.value, null, 'style attr'));
     });
     const unreadable = [];
     for (const sheet of allSheets(document)) {
@@ -3209,17 +3352,14 @@
       const base = sheet.href || document.baseURI;
       const walk = (list) => {
         for (const r of list) {
-          if (r.type === 3) add(new URL(r.href, base).href, 'css', '@import');
-          else if (r.type === 5 || r.type === 1) {
-            (r.cssText.match(/url\(\s*(['"]?)(?!data:)([^'")]+)\1\s*\)/g) || []).forEach((m) => {
-              const u = m.replace(/^url\(\s*['"]?|['"]?\s*\)$/g, '');
-              try {
-                add(
-                  new URL(u, base).href,
-                  r.type === 5 ? 'font' : null,
-                  r.type === 5 ? '@font-face' : 'css url()'
-                );
-              } catch (_) {}
+          if (r.type === 3) {
+            const dest = safe(() => new URL(r.href, base).href);
+            if (dest) add(dest, 'css', '@import');
+          } else if (r.type === 5 || r.type === 1) {
+            cssUrls(r.cssText, 200).forEach((m) => {
+              if (/^data:/i.test(m.value)) return;
+              const dest = safe(() => new URL(m.value, base).href);
+              if (dest) add(dest, r.type === 5 ? 'font' : null, r.type === 5 ? '@font-face' : 'css url()');
             });
           } else if (r.cssRules) walk(r.cssRules);
         }
@@ -3233,7 +3373,9 @@
           const a = new URL(r.name);
           a.hash = '';
           if (!out.has(a.href)) out.set(a.href, { url: a.href, kind: 'api', via: ['perf:' + it] });
-        } catch (_) {}
+        } catch (_) {
+          /* an unparseable address is not listed */
+        }
         return;
       }
       const k = it === 'script' ? 'js' : it === 'img' ? 'image' : it === 'iframe' ? 'html' : null;
@@ -3241,15 +3383,19 @@
     });
     const inlineScripts = [],
       inlineStyles = [];
+    // Caps on how much inline code one call returns; "truncated" tells the panel when they apply.
+    let inlineBudget = 20 * 1024 * 1024;
     document.querySelectorAll('script:not([src])').forEach((s, i) => {
       const t = s.textContent || '';
-      if (t.trim() && s.id !== '__df_bridge')
+      if (t.trim() && s.id !== '__df_bridge' && inlineScripts.length < 500 && inlineBudget > 0) {
+        inlineBudget -= Math.min(t.length, 2e6);
         inlineScripts.push({
           index: i,
           type: s.type || 'classic',
           code: t.length > 2e6 ? t.slice(0, 2e6) : t,
           truncated: t.length > 2e6,
         });
+      }
     });
     document.querySelectorAll('style').forEach((s, i) => {
       if (s.id === '__df_overrides') return;
@@ -3268,13 +3414,39 @@
     };
   }
   async function fetchInPage(url, maxBytes) {
+    // The limit is mandatory and enforced while reading, not only from Content-Length (a chunked
+    // response has none).
+    const limit = Number.isFinite(maxBytes) && maxBytes > 0 ? Math.min(maxBytes, 50 * 1024 * 1024) : 0;
+    if (!limit) throw new Error('A size limit is required.');
     const u = new URL(url, document.baseURI);
-    if (u.origin !== location.origin) throw new Error('not same-origin');
-    const r = await fetch(u.href, { credentials: 'same-origin', cache: 'force-cache' });
+    if (!/^https?:$/.test(u.protocol) || u.origin !== location.origin) throw new Error('not same-origin');
+    // no-cache: revalidate, so a changed file is not exported from a stale copy.
+    const r = await fetch(u.href, { credentials: 'same-origin', cache: 'no-cache' });
+    if (new URL(r.url).origin !== location.origin) {
+      if (r.body) r.body.cancel().catch(() => {});
+      throw new Error('redirected to another origin');
+    }
     const len = +r.headers.get('content-length') || 0;
-    if (len > maxBytes) throw new Error('too large (' + len + ' bytes)');
-    const buf = new Uint8Array(await r.arrayBuffer());
-    if (buf.length > maxBytes) throw new Error('too large (' + buf.length + ' bytes)');
+    if (len > limit) throw new Error('too large (' + len + ' bytes)');
+    const reader = r.body.getReader();
+    const chunks = [];
+    let n = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      n += value.length;
+      if (n > limit) {
+        reader.cancel().catch(() => {});
+        throw new Error('too large (> ' + limit + ' bytes)');
+      }
+      chunks.push(value);
+    }
+    const buf = new Uint8Array(n);
+    let at = 0;
+    for (const c of chunks) {
+      buf.set(c, at);
+      at += c.length;
+    }
     let bin = '';
     for (let i = 0; i < buf.length; i += 0x8000)
       bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
@@ -3444,7 +3616,6 @@
     performanceAudit,
     observeLongTasks,
     securityAudit,
-    fetchHeaders,
     collectComponent,
     recreate,
     compareRecreation,
@@ -3474,6 +3645,7 @@
       for (const fn of destroyHooks.splice(0)) safe(fn);
       stopPick();
       record(false);
+      WORKFLOW.cancelled = true;
       safe(resetAll);
       fixedToggle(false);
       xray(false);

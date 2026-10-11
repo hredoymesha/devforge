@@ -113,7 +113,11 @@ registerTab('auto', 'Automate', async (v) => {
                 click: () => {
                   const s = { action: a };
                   if (a === 'wait') s.ms = +val.value || 500;
-                  else if (a === 'navigate') s.url = val.value;
+                  else if (a === 'navigate') {
+                    if (!DFSafe.webUrl(val.value, DF.state.url))
+                      return toast('Enter an http or https address to navigate to.');
+                    s.url = val.value;
+                  }
                   else {
                     s.selector = useSel();
                     if (!s.selector) return toast('Enter a selector or select an element');
@@ -254,7 +258,8 @@ registerTab('auto', 'Automate', async (v) => {
             click: () => {
               try {
                 const p = JSON.parse(json.value);
-                if (!Array.isArray(p)) throw new Error('must be an array');
+                const problems = DFSafe.workflowProblems(p);
+                if (problems.length) throw new Error(problems[0]);
                 wf.steps = p;
                 draw();
                 toast('Imported');

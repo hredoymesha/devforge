@@ -8,7 +8,7 @@ const DF = {
     h: null,
     info: null,
     project: null,
-    settings: { theme: 'system', shortcuts: {}, lastTab: 'inspect' },
+    settings: { theme: 'system', shortcuts: {}, lastTab: 'home', seenWelcome: false, followRedirects: false },
   },
   views: {},
 };
@@ -20,9 +20,10 @@ const AGENT_FILES = [
   'agent/vitals.js',
   'agent/tokens.js',
   'agent/storage.js',
+  'agent/security.js',
 ];
 // Bump whenever the agent API changes so pages holding an older copy get a fresh one.
-const AGENT_VERSION = 4;
+const AGENT_VERSION = 9;
 
 /* Errors from UI handlers end up here instead of as unhandled rejections in the console. */
 function showError(err) {
@@ -296,49 +297,17 @@ async function ensureOrigins(urls) {
   for (const o of origins) if (await chrome.permissions.contains({ origins: [o] })) granted.push(o);
   return { granted, denied: origins.filter((o) => !granted.includes(o)) };
 }
-async function fetchBytes(url, maxBytes = 25 * 1024 * 1024, timeoutMs = 20000) {
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
-  try {
-    const r = await fetch(url, {
-      credentials: 'omit',
-      cache: 'force-cache',
-      signal: ac.signal,
-      redirect: 'follow',
-    });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const len = +r.headers.get('content-length') || 0;
-    if (len > maxBytes) throw new Error('too large (' + len + ' bytes)');
-    const reader = r.body.getReader();
-    const chunks = [];
-    let n = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      n += value.length;
-      if (n > maxBytes) {
-        try {
-          await reader.cancel();
-        } catch (_) {}
-        throw new Error('too large (> ' + maxBytes + ' bytes)');
-      }
-      chunks.push(value);
-    }
-    const bytes = new Uint8Array(n);
-    let off = 0;
-    for (const ch of chunks) {
-      bytes.set(ch, off);
-      off += ch.length;
-    }
-    return { bytes, type: r.headers.get('content-type') || '', status: r.status, finalUrl: r.url };
-  } catch (e) {
-    throw new Error(
-      e.name === 'AbortError' ? 'timed out after ' + timeoutMs / 1000 + 's' : e.message
-    );
-  } finally {
-    clearTimeout(timer);
-  }
-}
+// Downloads a page-derived URL with size and time limits. Private/loopback targets are refused
+// before the request unless the page itself is on that host, and redirects are not followed unless
+// the user turned that on in Settings; see lib/net.js for the reasoning and the residual risk.
+const fetchBytes = (url, maxBytes = 25 * 1024 * 1024, timeoutMs = 20000) =>
+  DFNet.fetchBounded(url, {
+    maxBytes,
+    timeoutMs,
+    pageUrl: DF.state.url,
+    followRedirects: DF.state.settings.followRedirects === true,
+    guard: (pageUrl) => DFNetGuard.install(chrome, chrome.runtime.id, pageUrl),
+  });
 
 // tab/command registry
 function registerTab(id, label, render, opts = {}) {
@@ -375,7 +344,7 @@ function show(id) {
   }
   const v = clear($('#view'));
   v.setAttribute('aria-labelledby', 'tab-' + id);
-  v.scrollTop = 0;
+  document.querySelector('main').scrollTop = 0;
   try {
     const r = t.render(v);
     if (r && r.catch)
@@ -513,14 +482,21 @@ async function saveToWorkspace(kind, title, payload, extra) {
     const ps = await DFStore.listProjects();
     DF.state.project = ps[0] ? ps[0].id : (await DFStore.createProject('My first project')).id;
   }
-  const it = await DFStore.saveItem({
-    project: DF.state.project,
-    kind,
-    title,
-    url: DF.state.url,
-    payload,
-    ...(extra || {}),
-  });
+  let it;
+  try {
+    it = await DFStore.saveItem({
+      project: DF.state.project,
+      kind,
+      title,
+      url: DF.state.url,
+      payload,
+      ...(extra || {}),
+    });
+  } catch (e) {
+    if (e && e.name === 'OwnerLockedError')
+      throw new Error('Workspace encryption is on and Owner mode is locked, so nothing was saved. Unlock it in the Owner tab, then save again.');
+    throw e;
+  }
   toast('Saved to workspace: ' + title);
   return it;
 }

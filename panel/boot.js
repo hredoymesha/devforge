@@ -17,6 +17,7 @@ function setTheme(t) {
 systemDark.addEventListener('change', applyTheme);
 
 const ORDER = [
+  'home',
   'inspect',
   'css',
   'network',
@@ -28,6 +29,8 @@ const ORDER = [
   'site',
   'recreate',
   'audit',
+  'security',
+  'owner',
   'data',
   'ai',
   'play',
@@ -51,36 +54,62 @@ DF.tabs.forEach((t) =>
         'data-id': t.id,
         'aria-selected': 'false',
         'aria-controls': 'view',
+        // The label span is hidden on narrow panels, so the name has to be on the button itself.
+        'aria-label': t.label,
+        title: t.label,
         tabindex: -1,
         on: { click: () => show(t.id) },
       },
-      t.label
+      icon(t.id, 15), // icon names match tab ids; an unknown id falls back to a generic icon
+      h('span', { class: 'tab-label' }, t.label)
     )
   )
 );
-// Widths are measured once while every tab is visible; labels never change afterwards.
-let tabWidths = null;
+/*
+ * Below COMPACT_BELOW px only the selected tab shows its name; the others are icons. Widths are
+ * measured twice while every tab is visible (icon + name, and icon only) because which of the two
+ * a tab needs depends on whether it is the selected one.
+ */
+const COMPACT_BELOW = 640;
+let tabWidths = null; // { full: Map, icon: Map }
+let compactTabs = false;
 let hiddenTabs = []; // ids of the panels currently moved into the overflow menu
+function measureTabs() {
+  const buttons = [...tabsEl.children];
+  buttons.forEach((b) => (b.hidden = false));
+  const take = () => new Map(buttons.map((b) => [b, b.offsetWidth]));
+  tabsEl.dataset.measure = 'full';
+  const full = take();
+  tabsEl.dataset.measure = 'icon';
+  const icons = take();
+  delete tabsEl.dataset.measure;
+  if (![...full.values()].some(Boolean)) return null; // panel not laid out yet
+  return { full, icon: icons };
+}
 function layoutTabs() {
   const buttons = [...tabsEl.children];
-  if (!tabWidths) {
-    buttons.forEach((b) => (b.hidden = false));
-    tabWidths = new Map(buttons.map((b) => [b, b.offsetWidth]));
-    if (![...tabWidths.values()].some(Boolean)) {
-      tabWidths = null; // panel not laid out yet
-      return;
-    }
+  const barWidth = tabsEl.parentElement.clientWidth;
+  if (!barWidth) return;
+  const wantCompact = barWidth < COMPACT_BELOW;
+  if (wantCompact !== compactTabs) {
+    compactTabs = wantCompact;
+    tabsEl.classList.toggle('compact', compactTabs);
   }
-  const avail = tabsEl.parentElement.clientWidth - 36; // room for the overflow button
-  const total = [...tabWidths.values()].reduce((a, b) => a + b, 0);
+  if (!tabWidths) {
+    tabWidths = measureTabs();
+    if (!tabWidths) return;
+  }
+  const active = buttons.find((b) => b.dataset.id === DF.state.tab) || buttons[0];
+  const width = (b) => (compactTabs && b !== active ? tabWidths.icon.get(b) : tabWidths.full.get(b));
+  const avail = barWidth - 36; // room for the overflow button
+  const total = buttons.reduce((sum, b) => sum + width(b), 0);
   const overflow = [];
   if (total > avail + 36) {
-    const active = buttons.find((b) => b.dataset.id === DF.state.tab) || buttons[0];
-    let used = tabWidths.get(active);
+    let used = width(active);
     let full = false;
     for (const b of buttons) {
       if (b === active) continue;
-      if (!full && used + tabWidths.get(b) <= avail) used += tabWidths.get(b);
+      if (!full && used + width(b) <= avail) used += width(b);
       else {
         full = true;
         overflow.push(b);
@@ -103,9 +132,11 @@ function layoutTabs() {
 // Hidden panels are listed by area, like DevTools groups its tools. Panels not listed here
 // (Settings, or any panel added later) go in an untitled group at the end.
 const TAB_GROUPS = [
+  ['Start', ['home']],
   ['Inspect & style', ['inspect', 'css', 'tokens']],
   ['Network', ['network']],
   ['Performance', ['perf', 'mutations', 'audit']],
+  ['Security', ['security', 'owner']],
   ['Application', ['storage', 'data']],
   ['Build & ship', ['export', 'site', 'recreate', 'play', 'auto', 'ai', 'work']],
 ];
@@ -137,6 +168,7 @@ function renderMenu() {
               role: 'menuitem',
               tabindex: -1,
               'data-id': id,
+              'data-label': t.label,
               // ARIA spells the modifier "Control"; a combo containing a space cannot be expressed.
               'aria-keyshortcuts': sc && !/\s/.test(sc) ? sc.replace(/^Ctrl\b/, 'Control') : null,
               on: {
@@ -149,7 +181,7 @@ function renderMenu() {
                 },
               },
             },
-            h('span', null, t.label),
+            h('span', { class: 'menu-label' }, icon(id, 14), ' ', h('span', null, t.label)),
             sc ? h('kbd', null, sc) : null
           );
         })
@@ -185,7 +217,7 @@ moreMenu.addEventListener('keydown', (e) => {
   const items = menuItems();
   if (!items.length) return;
   const i = items.indexOf(document.activeElement);
-  let next = null;
+  let next;
   if (e.key === 'ArrowDown') next = items[(i + 1) % items.length];
   else if (e.key === 'ArrowUp') next = items[(i - 1 + items.length) % items.length];
   else if (e.key === 'Home') next = items[0];
@@ -199,7 +231,7 @@ moreMenu.addEventListener('keydown', (e) => {
     // Type-ahead: jump to the next panel whose name starts with the typed character.
     const k = e.key.toLowerCase();
     const order = [...items.slice(i + 1), ...items.slice(0, i + 1)];
-    next = order.find((b) => b.firstChild.textContent.toLowerCase().startsWith(k)) || null;
+    next = order.find((b) => b.dataset.label.toLowerCase().startsWith(k)) || null;
     if (!next) return;
   } else return;
   e.preventDefault();
@@ -212,6 +244,7 @@ document.addEventListener('click', (e) => {
 new ResizeObserver(() => layoutTabs()).observe(tabsEl.parentElement);
 // show() changes the active tab, which may have to be swapped into the visible part of the bar.
 const baseShow = show;
+// eslint-disable-next-line no-global-assign -- deliberately wraps the tab switcher to add behaviour
 show = function (id) {
   baseShow(id);
   layoutTabs();
@@ -414,9 +447,11 @@ function runCommand(command) {
   if (command === 'pick') guard(pickNow)();
   else if (command === 'inspect-context') guard(inspectContextTarget)();
 }
-chrome.runtime.onMessage.addListener((m, sender) => {
+chrome.runtime.onMessage.addListener((raw, sender) => {
+  // Anything that is not exactly one of the expected shapes from the expected sender is dropped.
+  const m = DFSafe.checkPanelMessage(raw, sender, chrome.runtime.id, DF.state.tabId);
+  if (!m) return;
   if (m.type === 'df:selected') {
-    if (sender.tab && sender.tab.id !== DF.state.tabId) return;
     call('select', m.handle)
       .then((d) => {
         DF.state.h = d.h;
@@ -458,7 +493,9 @@ chrome.tabs.onActivated.addListener(async () => {
   try {
     await activeTab();
     await restoreSelection();
-  } catch (_) {}
+  } catch (_) {
+    /* no stored selection to restore */
+  }
   if (SELECTION_TABS.includes(DF.state.tab) || DF.tabs.find((t) => t.id === DF.state.tab).perTab)
     show(DF.state.tab);
 });
@@ -478,7 +515,9 @@ chrome.tabs.onUpdated.addListener((id, ch) => {
   try {
     const r = await chrome.storage.local.get('settings');
     if (r.settings) Object.assign(DF.state.settings, r.settings);
-  } catch (_) {}
+  } catch (_) {
+    /* saved settings are unavailable; defaults apply */
+  }
   applyTheme();
   try {
     await activeTab();
@@ -487,11 +526,13 @@ chrome.tabs.onUpdated.addListener((id, ch) => {
   }
   const start = DF.tabs.some((t) => t.id === DF.state.settings.lastTab)
     ? DF.state.settings.lastTab
-    : 'inspect';
+    : 'home';
   show(start);
   // A shortcut or context-menu click may have opened the panel just now.
   try {
     const { pendingCommand: p } = await chrome.storage.session.get('pendingCommand');
     if (p && Date.now() - p.at < 10000) runCommand(p.command);
-  } catch (_) {}
+  } catch (_) {
+    /* no pending command */
+  }
 })();

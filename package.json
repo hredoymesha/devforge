@@ -1,0 +1,28 @@
+{
+  "name": "devforge",
+  "version": "4.1.0",
+  "private": true,
+  "description": "DevForge Chrome extension. No build step; this file only holds the dev scripts.",
+  "license": "MIT",
+  "scripts": {
+    "check": "node scripts/check.js",
+    "lint": "eslint .",
+    "test": "node --test",
+    "verify": "npm run check && npm test",
+    "verify:all": "npm run lint && npm run verify",
+    "e2e": "node e2e/run.js",
+    "backup": "node scripts/backup.js create",
+    "backup:verify": "node scripts/backup.js verify",
+    "a11y": "node e2e/a11y.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "axe-core": "4.14.0",
+    "eslint": "10.12.0",
+    "globals": "17.13.0"
+  },
+  "//": "The extension itself needs no install. Node 18+ runs check/test/backup; ESLint (devDependencies) needs Node 20.19+ or 22.13+."
+}

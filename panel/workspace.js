@@ -120,6 +120,10 @@ registerTab('work', 'Workspace', async (v) => {
   };
   const detail = h('div');
   const openItem = (it) => {
+    if (it.locked) {
+      clear(detail).append(h('div', { class: 'sev-info', role: 'status' }, it.damaged ? 'This item is encrypted and could not be opened: it was sealed with a different passphrase or has been altered.' : 'This item is encrypted. Unlock Owner mode (Owner tab) to open it.'));
+      return;
+    }
     clear(detail).append(
       section(
         it.kind + ': ' + it.title,
@@ -144,6 +148,9 @@ registerTab('work', 'Workspace', async (v) => {
             },
             'Download'
           ),
+          it.kind === 'security' && it.payload && it.payload.version === 2
+            ? h('button', { class: 'primary', on: { click: () => { DF.state.secReport = it.payload; show('security'); } } }, 'Open report')
+            : '',
           it.payload && it.payload.prompt
             ? h('button', { on: { click: () => copy(it.payload.prompt) } }, 'Copy prompt')
             : '',

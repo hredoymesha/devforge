@@ -51,7 +51,9 @@ async function detectTech(scan) {
         const t = (k, f) => {
           try {
             if (f()) o[k] = 1;
-          } catch (_) {}
+          } catch (_) {
+            /* a feature probe that throws means "not supported" */
+          }
         };
         t('React', () => window.React || window.__REACT_DEVTOOLS_GLOBAL_HOOK__);
         t('Vue', () => window.Vue || window.__VUE__);
@@ -85,30 +87,10 @@ async function scanSite() {
   const scan = await call('siteResources');
   let captured = [];
   try {
-    captured =
-      (await exec(
-        () =>
-          window.__dfNet
-            ? window.__dfNet.log
-                .filter(
-                  (x) =>
-                    (x.kind === 'fetch' || x.kind === 'xhr') &&
-                    typeof x.resBody === 'string' &&
-                    x.status >= 200 &&
-                    x.status < 300
-                )
-                .map((x) => ({
-                  method: x.method,
-                  url: x.url,
-                  status: x.status,
-                  body: x.resBody.slice(0, 200000),
-                  reqBody: x.reqBody,
-                }))
-            : [],
-        [],
-        'MAIN'
-      )) || [];
-  } catch (_) {}
+    captured = (await netCall('captured')) || [];
+  } catch (_) {
+    /* capture is not running, so nothing was captured */
+  }
   scan.captured = captured;
   scan.host = new URL(scan.page).hostname;
   scan.resources.forEach((r) => {
@@ -254,11 +236,15 @@ async function runSiteDownload(opts, ui) {
             try {
               const j = decodeURIComponent(ref.split(',').slice(1).join(','));
               extractMap(j.startsWith('{') ? j : atob(j), it.path + '.inline-map');
-            } catch (_) {}
+            } catch (_) {
+              /* an unreadable inline source map is skipped */
+            }
           } else {
             try {
               enqueue(new URL(ref, it.url).href, 'map', 'sourceMappingURL of ' + it.path);
-            } catch (_) {}
+            } catch (_) {
+              /* an unusable sourceMappingURL is skipped */
+            }
           }
         }
       }

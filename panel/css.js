@@ -49,7 +49,9 @@ registerTab('css', 'CSS', async (v) => {
     try {
       const hi = await call('history');
       undoState.textContent = `${hi.undo} change(s), ${hi.redo} redoable`;
-    } catch (_) {}
+    } catch (_) {
+      /* edit history is not available until the page agent has an edit */
+    }
   };
   const prop = h('input', {
       class: 'grow',
@@ -444,9 +446,12 @@ registerTab('css', 'CSS', async (v) => {
 });
 // Appends to the CSS view it was started from, even if the user switched tabs meanwhile.
 async function fetchBlocked(blocked, v) {
-  const urls = blocked.map((b) => b.source).filter((s) => /^https?:/.test(s));
+  const all = blocked.map((b) => b.source).filter((s) => /^https?:/.test(s));
+  const urls = all.filter((s) => !blocksPrivate(s, DF.state.url));
   const perm = await ensureOrigins(urls);
-  const out = [];
+  const out = all
+    .filter((s) => !urls.includes(s))
+    .map((s) => `/* ${s}: skipped, private or loopback address that the page is not itself on */`);
   for (const u of urls) {
     try {
       const { bytes } = await fetchBytes(u);

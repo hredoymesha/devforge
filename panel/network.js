@@ -107,12 +107,60 @@ function readResourceTimings() {
   }));
 }
 
-async function pollNet() {
-  const res = await exec(
-    (rev) => (window.__dfNet && window.__dfNet.changes ? window.__dfNet.changes(rev) : null),
-    [net.rev],
+/*
+ * Capture channel. The log lives in a closure inside netcap.js, not on `window`, so page scripts
+ * cannot read it. Each page has a secret and a random function name, both given only to the
+ * extension. They are kept in memory, in session storage (so a reopened panel can reconnect) and,
+ * for capture started at page load, in the isolated-world bridge (netbridge.js).
+ */
+const NET_KEYS = 'netCaptureKeys';
+const netKeys = new Map(); // tab id -> { n, s }
+async function netRememberKey(tabId, key) {
+  netKeys.set(tabId, key);
+  const stored = (await chrome.storage.session.get(NET_KEYS))[NET_KEYS] || {};
+  stored[tabId] = key;
+  await chrome.storage.session.set({ [NET_KEYS]: stored });
+}
+async function netForgetKey(tabId) {
+  netKeys.delete(tabId);
+  const stored = (await chrome.storage.session.get(NET_KEYS))[NET_KEYS] || {};
+  delete stored[tabId];
+  await chrome.storage.session.set({ [NET_KEYS]: stored });
+}
+// Calls one command in the page-side closure. Resolves null when capture is not reachable.
+async function netInvoke(tabId, key, cmd, arg) {
+  return exec(
+    (n, s, c, a) => {
+      const f = window[n];
+      return typeof f === 'function' ? f(s, c, a) : undefined;
+    },
+    [key.n, key.s, cmd, arg === undefined ? null : arg],
     'MAIN'
   );
+}
+async function netCall(cmd, arg) {
+  const tab = await activeTab();
+  const candidates = [netKeys.get(tab.id)];
+  if (!candidates[0]) {
+    const stored = (await chrome.storage.session.get(NET_KEYS))[NET_KEYS] || {};
+    candidates[0] = stored[tab.id];
+  }
+  // Capture registered at page start leaves its key with the isolated-world bridge.
+  candidates.push(await exec(() => globalThis.__dfNetKey || null, [], 'ISOLATED').catch(() => null));
+  for (const key of candidates) {
+    if (!key || !key.n || !key.s) continue;
+    const r = await netInvoke(tab.id, key, cmd, arg);
+    if (r !== undefined) {
+      if (netKeys.get(tab.id) !== key) await netRememberKey(tab.id, key);
+      return r;
+    }
+  }
+  await netForgetKey(tab.id);
+  return null;
+}
+
+async function pollNet() {
+  const res = await netCall('changes', net.rev);
   if (!res) {
     net.captureOn = false;
     net.rows.clear();
@@ -130,7 +178,7 @@ async function pollNet() {
     for (const id of net.rows.keys()) if (!alive.has(id)) net.rows.delete(id);
     net.rev = res.rev;
     if (net.pushedRules !== net.startedAt || res.rules !== activeRules().length) await pushRules();
-    net.hits = (await exec(() => window.__dfNet.ruleHits(), [], 'MAIN').catch(() => null)) || {};
+    net.hits = (await netCall('ruleHits').catch(() => null)) || {};
   }
   matchTimings(await exec(readResourceTimings, []));
 }
@@ -197,7 +245,8 @@ function allRows() {
 }
 
 /* DevTools-style filter: words must all match the URL; `-word` excludes; `status:4xx`,
-   `method:post`, `domain:cdn`, `larger-than:100k`, `is:mocked|blocked|error|cached`. */
+   `method:post`, `domain:cdn`, `larger-than:100k`, `header:server[=value]`,
+   `is:mocked|blocked|error|cached|ruled|insecure|sensitive|open-cors`. */
 function parseQuery(q) {
   return q
     .trim()
@@ -210,6 +259,33 @@ function parseQuery(q) {
       return { neg, key: m ? m[1].toLowerCase() : null, val: (m ? m[2] : body).toLowerCase() };
     });
 }
+/*
+ * Quick security signals for a captured request, in the same terms as the Security tab. They are
+ * observations from the address and response headers only: values are never shown.
+ *   insecure  an http:// or ws:// request made from an HTTPS page
+ *   sensitive a token-like parameter (or a username/password) in the address
+ *   open-cors the response allows any origin to read it
+ */
+function netSignals(r) {
+  const out = [];
+  let u;
+  try {
+    u = new URL(r.url);
+  } catch (_) {
+    return out;
+  }
+  if (/^https:/i.test(DF.state.url) && /^(http|ws):$/.test(u.protocol) && !isPrivateHost(u.hostname)) out.push('insecure');
+  if (u.username || u.password || [...u.searchParams].some(([k, v]) => v && DFSafe.isSensitiveKey(k))) out.push('sensitive');
+  const acao = r.resHeaders && r.resHeaders['access-control-allow-origin'];
+  if (acao === '*') out.push('open-cors');
+  return out;
+}
+const NET_SIGNAL_TEXT = {
+  insecure: 'Sent without encryption from an HTTPS page',
+  sensitive: 'Token-like value (or credentials) in the address',
+  'open-cors': 'Response allows any origin (CORS *)',
+};
+
 function sizeArg(v) {
   const m = /^(\d+(?:\.\d+)?)(k|m)?b?$/i.exec(v);
   if (!m) return Infinity;
@@ -241,6 +317,13 @@ function rowMatches(r, terms) {
       case 'larger-than':
         hit = (r.size || r.transfer || 0) > sizeArg(t.val);
         break;
+      case 'header': {
+        // header:server finds responses that have the header; header:server=nginx also matches its value.
+        const [name, want] = t.val.split('=');
+        const found = Object.entries(r.resHeaders || {}).find(([k]) => k.toLowerCase() === name);
+        hit = !!found && (want == null || String(found[1]).toLowerCase().includes(want));
+        break;
+      }
       case 'is':
         hit =
           t.val === 'mocked'
@@ -257,7 +340,9 @@ function rowMatches(r, terms) {
                     )
                   : t.val === 'ruled'
                     ? !!(r.rules && r.rules.length)
-                    : false;
+                    : NET_SIGNAL_TEXT[t.val]
+                      ? netSignals(r).includes(t.val)
+                      : false;
         break;
       default:
         hit = (r.method + ' ' + r.url + ' ' + (r.status || '')).toLowerCase().includes(t.val);
@@ -297,7 +382,7 @@ async function saveRules() {
 }
 async function pushRules() {
   const rules = activeRules();
-  await exec((list) => window.__dfNet && window.__dfNet.setRules(list), [rules], 'MAIN');
+  await netCall('setRules', rules);
   net.pushedRules = net.startedAt;
 }
 function validateRule(r) {
@@ -330,13 +415,27 @@ const ruleSummary = (r) =>
 
 /* ---------- capture control ---------- */
 async function startCapture() {
-  await exec(null, [], 'MAIN', ['netcap.js']);
+  // Inject only when no reachable capture exists, so a second click never wraps fetch twice.
+  if ((await netCall('ping')) !== 'pong') {
+    const tab = await activeTab();
+    // The file's completion value is the channel key; executeScript returns it only to us.
+    const key = await exec(null, [], 'MAIN', ['netcap.js']);
+    if (key && key.n && key.s) {
+      await netRememberKey(tab.id, key);
+      DFOwnerSession.record({ event: 'capture started', detail: 'on demand' });
+    }
+    else
+      throw new Error(
+        'Capture is already running on this page, but this panel no longer has its key. Reload the page, then start capture again.'
+      );
+  }
   // The default Resource Timing buffer holds 250 entries; busy pages overflow it quickly.
   await exec(() => performance.setResourceTimingBufferSize(3000), []);
   net.rev = 0;
   await pollNet();
   await pushRules();
 }
+const PERSIST_BRIDGE_ID = 'df-netcap-bridge';
 async function persistentOrigins() {
   const regs = await chrome.scripting.getRegisteredContentScripts({ ids: [PERSIST_ID] });
   return regs[0] ? regs[0].matches : [];
@@ -349,25 +448,24 @@ async function setPersistent(on) {
     throw new Error('Capturing from page start needs permanent access to ' + origin + '.');
   const current = await persistentOrigins();
   const next = on ? [...new Set([...current, pattern])] : current.filter((m) => m !== pattern);
-  if (current.length) await chrome.scripting.unregisterContentScripts({ ids: [PERSIST_ID] });
+  const ids = [PERSIST_ID, PERSIST_BRIDGE_ID];
+  const have = (await chrome.scripting.getRegisteredContentScripts({ ids })).map((r) => r.id);
+  if (have.length) await chrome.scripting.unregisterContentScripts({ ids: have });
   if (next.length)
-    await chrome.scripting.registerContentScripts([
-      {
-        id: PERSIST_ID,
-        matches: next,
-        js: ['netcap.js'],
-        runAt: 'document_start',
-        world: 'MAIN',
-        allFrames: false,
-        persistAcrossSessions: false,
-      },
-    ]);
+    // netcap.js wraps fetch/XHR in the page's world; netbridge.js (isolated world) receives its
+    // channel key. Both run at document_start, before any page script.
+    await chrome.scripting.registerContentScripts(
+      [
+        { id: PERSIST_ID, js: ['netcap.js'], world: 'MAIN' },
+        { id: PERSIST_BRIDGE_ID, js: ['netbridge.js'], world: 'ISOLATED' },
+      ].map((s) => ({ ...s, matches: next, runAt: 'document_start', allFrames: false, persistAcrossSessions: false }))
+    );
   return next;
 }
 
 /* ---------- detail ---------- */
 async function fullEntry(id) {
-  const e = await exec((i) => (window.__dfNet ? window.__dfNet.get(i) : null), [id], 'MAIN');
+  const e = await netCall('get', id);
   if (!e) throw new Error('This request is no longer in the capture log.');
   return e;
 }
@@ -622,7 +720,9 @@ function renderDetail(box, row) {
                 let q = null;
                 try {
                   q = [...new URL(e.url).searchParams];
-                } catch (_) {}
+                } catch (_) {
+                  /* an unparseable address has no query table */
+                }
                 c.append(
                   q && q.length
                     ? section(
@@ -912,7 +1012,9 @@ function ruleFromEntry(e) {
   try {
     const u = new URL(e.url);
     match = u.host + u.pathname;
-  } catch (_) {}
+  } catch (_) {
+    /* an unparseable address is matched as given */
+  }
   return {
     match,
     regex: false,
@@ -1306,7 +1408,7 @@ registerTab('network', 'Network', async (v) => {
     type: 'search',
     value: net.query,
     placeholder:
-      'Filter: text, -exclude, status:4xx, method:post, domain:, larger-than:50k, is:mocked',
+      'Filter: text, -exclude, status:4xx, method:post, domain:, header:server, is:insecure, is:sensitive',
     'aria-label': 'Filter requests',
   });
   const rulesBox = rulesSection(() => drawList());
@@ -1400,7 +1502,9 @@ registerTab('network', 'Network', async (v) => {
         const u = new URL(net.redact ? redactUrl(r.url) : r.url);
         host = u.host;
         path = (u.pathname + u.search).slice(0, 140) || '/';
-      } catch (_) {}
+      } catch (_) {
+        /* an unparseable address is shown as given */
+      }
       const bad = r.error || r.status >= 400 || r.blocked;
       const tr = h(
         'tr',
@@ -1457,6 +1561,9 @@ registerTab('network', 'Network', async (v) => {
               : '',
             r.rules && r.rules.length && !r.mocked && !r.blocked
               ? h('span', { class: 'tag reconstructed', title: 'Modified by a rule' }, 'rule')
+              : '',
+            netSignals(r).length
+              ? h('span', { class: 'tag unavailable', title: netSignals(r).map((s) => NET_SIGNAL_TEXT[s]).join('\n') }, 'security')
               : '',
             ' ' + host + (r.perf ? ' · timing only' : '')
           )
@@ -1573,10 +1680,16 @@ registerTab('network', 'Network', async (v) => {
       h('button', { on: { click: refresh } }, 'Refresh'),
       h(
         'button',
+        { title: 'Open the Security tab. Captured requests are included in the assessment.', on: { click: () => show('security') } },
+        icon('security', 13),
+        ' Security'
+      ),
+      h(
+        'button',
         {
           on: {
             click: async () => {
-              await exec(() => window.__dfNet && window.__dfNet.clear(), [], 'MAIN');
+              await netCall('clear');
               net.clearedAt = await exec(() => performance.now(), []);
               net.rows.clear();
               net.timing.clear();

@@ -24,6 +24,9 @@ temp/
 test-output/
 coverage/
 
+# Local source backups made by scripts/backup.js
+backups/
+
 # Packaged builds and signing keys (never commit a .pem: it is the extension's identity)
 *.zip
 *.crx

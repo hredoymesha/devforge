@@ -7,7 +7,7 @@
   --fg: #e6e9ef;
   --mut: #8b95a7;
   --acc: #5b93ff;
-  --acc-fg: #fff;
+  --acc-fg: #0b1020; /* white on this blue is only 3.0:1; dark text is 6.4:1 */
   --ok: #3fb67a;
   --warn: #e0a82e;
   --err: #ef5b5b;
@@ -32,9 +32,10 @@
   --bg4: #dde3ee;
   --fg: #1a202c;
   --mut: #5b6678;
-  --acc: #2563eb;
-  --ok: #15803d;
-  --warn: #b45309;
+  --acc: #1d4fd0;
+  --acc-fg: #fff;
+  --ok: #137435;
+  --warn: #8f4106;
   --err: #c62828;
   --bd: #d5dbe6;
   --sel: rgba(37, 99, 235, 0.1);
@@ -348,7 +349,7 @@ main {
   overflow-x: hidden;
   padding: 10px;
 }
-main:focus {
+#view:focus {
   outline: none;
 }
 
@@ -361,7 +362,7 @@ h2 {
   color: var(--mut);
   font-weight: 600;
 }
-main > :first-child h2,
+#view > :first-child h2,
 .sec:first-child > h2 {
   margin-top: 4px;
 }
@@ -773,8 +774,9 @@ th.sortable:hover {
 .net-table tr.bad .name .mono {
   color: var(--err);
 }
+/* timing-only rows are set apart by style, not by fading the text below readable contrast */
 .net-table tr.perf {
-  opacity: 0.75;
+  font-style: italic;
 }
 .st {
   font-family: var(--mono);
@@ -1232,4 +1234,421 @@ img {
     animation: none !important;
     transition: none !important;
   }
+}
+
+/* Security tab */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.sec-counts {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 6px 0;
+}
+.sec-count {
+  flex: 1 1 70px;
+  background: var(--bg2);
+  border: 1px solid var(--bd);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  padding: 4px 8px;
+}
+.sec-statuses {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--mut);
+  font-size: 12px;
+}
+.sec-statuses b {
+  color: var(--fg);
+}
+.sec-count.sec-sev-high,
+.sec-finding.sec-sev-high {
+  border-left-color: var(--err);
+}
+.sec-count.sec-sev-medium,
+.sec-finding.sec-sev-medium {
+  border-left-color: var(--warn);
+}
+.sec-count.sec-sev-low,
+.sec-finding.sec-sev-low {
+  border-left-color: var(--acc);
+}
+.sec-count.sec-sev-info,
+.sec-finding.sec-sev-info {
+  border-left-color: var(--mut);
+}
+.sec-finding {
+  border-left-width: 4px;
+}
+.sec-finding > summary {
+  cursor: pointer;
+}
+.sec-finding p {
+  margin: 6px 0;
+}
+.sec-resource {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--mut);
+  overflow-wrap: anywhere;
+}
+.sec-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 6px 0;
+}
+.sec-related {
+  margin: 6px 0;
+}
+.sec-badge {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--mut);
+  white-space: nowrap;
+}
+.sec-badge.sec-high {
+  color: var(--err);
+  border-color: var(--err);
+}
+.sec-badge.sec-medium {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.sec-badge.sec-low {
+  color: var(--acc);
+  border-color: var(--acc);
+}
+.sec-badge.sec-observed,
+.sec-badge.sec-st-confirmed {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.sec-badge.sec-st-potential,
+.sec-badge.sec-review {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.sec-badge.sec-st-manual {
+  color: var(--acc);
+  border-color: var(--acc);
+}
+.sec-ack {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  margin: 8px 0;
+}
+.sec-levels {
+  border: 0;
+  padding: 0;
+  margin: 6px 0;
+}
+.sec-levels legend {
+  font-weight: 600;
+  padding: 0;
+  margin-bottom: 4px;
+}
+.sec-level {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  margin: 4px 0;
+  background: var(--bg2);
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.sec-level:has(input:checked) {
+  border-color: var(--acc);
+  background: var(--sel);
+}
+.sec-level input {
+  margin-top: 3px;
+}
+.sec-level-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sec-level-body span {
+  color: var(--mut);
+  font-size: 12px;
+}
+.sec-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.sec-tabs {
+  flex-wrap: wrap;
+}
+.sec-tab-count {
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--bg4);
+  font-size: 10px;
+}
+.sec-toolbar {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 6px 0;
+}
+.sec-toolbar input[type='search'] {
+  flex: 1 1 140px;
+}
+.sec-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--mut);
+}
+.sec-toolbar select {
+  max-width: 160px;
+}
+.sec-group {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--mut);
+}
+.sec-top li {
+  margin: 4px 0;
+}
+.sec-steps {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0;
+}
+.sec-step {
+  display: flex;
+  gap: 4px;
+  align-items: baseline;
+  padding: 2px 0;
+}
+.sec-step-done .ico {
+  color: var(--ok);
+}
+.sec-step-failed .ico {
+  color: var(--err);
+}
+.sec-step-running .ico {
+  color: var(--acc);
+}
+.sec-step-pending,
+.sec-step-skipped {
+  color: var(--mut);
+}
+.sec-progress progress {
+  flex: 1;
+  height: 8px;
+  accent-color: var(--acc);
+}
+.sec-mini {
+  padding: 1px 7px;
+  font-size: 11px;
+}
+.sec-path h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+.sec-path ol,
+.sec-path ul {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+}
+button.link {
+  text-align: left;
+  white-space: normal;
+}
+
+/* ---------- navigation: icons, compact tab bar ---------- */
+#tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+#tabs button[hidden] {
+  display: none; /* display:inline-flex above would otherwise override the hidden attribute */
+}
+#tabs .ico,
+.menu .ico {
+  flex: none;
+}
+/* Below ~640px only the selected tab keeps its name; the others are icon buttons. */
+#tabs.compact button:not([aria-selected='true']) .tab-label {
+  display: none;
+}
+#tabs.compact button:not([aria-selected='true']) {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+/* Used while measuring widths, so both states can be read in one layout pass. */
+#tabs[data-measure='full'] .tab-label {
+  display: inline !important;
+}
+#tabs[data-measure='full'] button {
+  padding-left: 9px !important;
+  padding-right: 9px !important;
+}
+#tabs[data-measure='icon'] .tab-label {
+  display: none !important;
+}
+#tabs[data-measure='icon'] button {
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+}
+.menu-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.logo {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 6px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, var(--acc), #7c5cff);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+}
+.seg button[aria-selected='true'] .sec-tab-count {
+  background: rgba(255, 255, 255, 0.28);
+  color: inherit;
+}
+button .ico {
+  vertical-align: -3px;
+}
+
+/* ---------- Home ---------- */
+.home-hero h2 {
+  margin: 4px 0 2px;
+  font-size: 16px;
+}
+.home-hero p {
+  margin: 0 0 6px;
+}
+.home-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  margin: 6px 0 10px;
+  border: 1px solid var(--bd);
+  border-radius: var(--radius);
+  background: var(--bg2);
+  font-size: 12px;
+}
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+.home-tile {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  text-align: left;
+  white-space: normal;
+  padding: 9px 10px;
+  background: var(--bg2);
+  border-radius: 8px;
+}
+.home-tile:hover:not(:disabled) {
+  background: var(--sel);
+}
+.home-tile-icon {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--sel);
+  color: var(--acc);
+}
+.home-tile-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.home-tile-body span {
+  color: var(--mut);
+  font-size: 12px;
+}
+.home-recent {
+  list-style: none;
+  margin: 4px 0;
+  padding: 0;
+}
+.home-recent li {
+  padding: 3px 0;
+}
+.home-welcome ul {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.home-hero h2 {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--fg);
+}
+.sec-levels {
+  min-width: 0;
+}
+.sec-level {
+  min-width: 0;
+}
+.sec-level-body {
+  min-width: 0;
+  flex: 1;
+}
+.sec-level-body span {
+  overflow-wrap: anywhere;
+}
+
+/* Owner mode indicator in the header (hidden attribute must win over display) */
+.owner-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--acc);
+  border-radius: 999px;
+  background: var(--sel);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.owner-chip[hidden] {
+  display: none;
+}
+.owner-chip:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 2px;
 }

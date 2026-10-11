@@ -1,0 +1,15 @@
+#!/bin/sh
+# DevForge local publishing guard. Install it yourself, on your own computer:
+#   cp scripts/hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+# It makes `git push` from this checkout fail unless you set DEVFORGE_ALLOW_PUSH=1 on that command:
+#   DEVFORGE_ALLOW_PUSH=1 git push -u origin my-branch
+#
+# This is a speed bump against ACCIDENTS and unattended tools, not a security boundary: anyone (or
+# any tool) that can run `git push --no-verify`, edit .git/hooks, or push through an API can skip it.
+# The real controls are on GitHub (see docs/AI-WRITE-CONTROLS.md).
+if [ "$DEVFORGE_ALLOW_PUSH" = "1" ]; then
+  exit 0
+fi
+echo "DevForge: push blocked. Review 'git status' and 'git diff', then run:" >&2
+echo "  DEVFORGE_ALLOW_PUSH=1 git push ..." >&2
+exit 1

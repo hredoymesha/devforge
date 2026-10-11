@@ -6,7 +6,7 @@ const CAPS = [
   ],
   [
     'A',
-    'HTML/CSS/data/ZIP export, screenshots (visible/element), accessibility & performance & security audits, local workspace',
+    'HTML/CSS/data/ZIP export, screenshots (visible/element), accessibility & performance audits, passive security checks and report, local workspace',
     'Fully implemented',
   ],
   [
@@ -174,6 +174,30 @@ registerTab('settings', 'Settings', async (v) => {
         'div',
         { class: 'sev-info' },
         'Optional. Without it DevForge only works on a tab after you click its toolbar icon, and screenshots/asset downloads ask per site. Screenshots specifically require either that click or all-sites access (a Chrome rule).'
+      )
+    ),
+    section(
+      'Saving files',
+      h(
+        'label',
+        { class: 'sec-ack', for: 'set-redirects' },
+        h('input', {
+          type: 'checkbox',
+          id: 'set-redirects',
+          checked: s.followRedirects === true,
+          on: {
+            change: (e) => {
+              s.followRedirects = e.target.checked;
+              saveSettings();
+            },
+          },
+        }),
+        ' Follow redirects when saving files (exports, stylesheets, site snapshot)'
+      ),
+      h(
+        'div',
+        { class: 'sev-info' },
+        'Off by default: redirected files are listed as "not followed" and nothing is requested from their targets. With it on, DevForge installs a browser-level rule that blocks any hop of a redirect chain that leads to a private, loopback or link-local address (unless your page is itself on that host), so the request is never sent. It cannot tell when a public-looking name resolves to a private address (DNS rebinding); redirects are refused if the rule cannot be installed.'
       )
     ),
     section(

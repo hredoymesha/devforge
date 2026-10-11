@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "DevForge — Web Dev Workbench",
-  "version": "4.0.0",
-  "description": "Local-first web dev workbench: inspector, network interception, Web Vitals, DOM mutations, design tokens, exports and audits.",
+  "version": "4.1.0",
+  "description": "Local-first web dev workbench: inspector, network interception, Web Vitals, design tokens, exports and security checks.",
   "minimum_chrome_version": "116",
   "permissions": [
     "activeTab",
@@ -10,8 +10,10 @@
     "storage",
     "sidePanel",
     "clipboardWrite",
-    "contextMenus"
+    "contextMenus",
+    "declarativeNetRequest"
   ],
+  "optional_permissions": ["cookies"],
   "optional_host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

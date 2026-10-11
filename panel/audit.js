@@ -152,49 +152,11 @@ registerTab('audit', 'Audit', async (v) => {
       h(
         'button',
         {
-          on: {
-            click: run('Scanning security patterns', async (o) => {
-              const s = await call('securityAudit');
-              let hd = null;
-              try {
-                hd = await call('fetchHeaders');
-              } catch (e) {
-                hd = { error: e.message };
-              }
-              clear(o).append(
-                section(
-                  'Security (passive, pattern-based)',
-                  issueTable(s.issues),
-                  s.thirdPartyHosts.length
-                    ? kv({ 'third-party script hosts': s.thirdPartyHosts.join(', ') })
-                    : '',
-                  kv({ CSP: s.csp }),
-                  hd && !hd.error
-                    ? h(
-                        'div',
-                        null,
-                        h('h2', null, 'Response headers (HEAD ' + 'to page URL)'),
-                        kv(hd.headers),
-                        hd.issues.length
-                          ? h(
-                              'ul',
-                              null,
-                              hd.issues.map((i) => h('li', { class: 'sev-warn' }, i))
-                            )
-                          : h('div', { class: 'sev-info' }, 'Core headers present.')
-                      )
-                    : h(
-                        'div',
-                        { class: 'sev-info' },
-                        'Header check unavailable: ' + (hd && hd.error)
-                      ),
-                  h('div', { class: 'sev-info' }, s.note)
-                )
-              );
-            }),
-          },
+          title: 'Security checks now live in their own tab: headers, cookies, exposed files, risky code and a full report.',
+          on: { click: () => show('security') },
         },
-        'Security'
+        icon('security', 13),
+        ' Security →'
       ),
       h(
         'button',

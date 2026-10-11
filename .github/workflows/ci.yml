@@ -1,0 +1,57 @@
+# Continuous integration for DevForge. Read-only by design: it checks, it never commits, pushes,
+# publishes, deploys, uploads artifacts or comments. This file only takes effect once YOU commit and
+# push it; creating it locally changes nothing on GitHub.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege: the default token can only read repository contents.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Lint, checks, unit tests, backup tool
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run verify
+      # The backup tool is part of the tests (test/backup.test.js). This also proves a fresh checkout
+      # can produce and verify its own backup; the archive is not uploaded anywhere.
+      - run: npm run backup -- --out "$RUNNER_TEMP/backup"
+
+  e2e:
+    name: Chromium end-to-end (extension loaded for real)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Playwright is a test driver, not a dependency of the extension, so it is installed here only.
+      - run: npm install --no-save playwright
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+      - run: npm run a11y

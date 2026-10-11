@@ -13,8 +13,24 @@
  *   mock     answers with a canned response, nothing is sent   (terminal)
  *   redirect sends the request to another URL                  (terminal)
  */
+/*
+ * Who can read the capture log: only the extension. The log, the rules and every record live in this
+ * closure; there is no page-visible global. The one entry point is a function stored under a random,
+ * non-enumerable, non-configurable property name, and it answers only to a 256-bit secret that is
+ * generated here and handed to the extension without passing through the page:
+ *   - injected on demand: the secret is this file's completion value, which executeScript returns
+ *     straight to the extension;
+ *   - registered at document_start: netbridge.js (isolated world) and this file swap it with a
+ *     one-time handshake that finishes before any page script has run.
+ * A page script can still notice that capture exists (the fetch wrapper is visible) and can tamper
+ * with built-ins before this file runs, because it shares the JavaScript realm; it cannot read the
+ * log or call the entry point without the secret.
+ */
 (() => {
-  if (window.__dfNet) return;
+  // A marker on XMLHttpRequest.prototype tells a second injection that capture is already running.
+  const MARK = Symbol.for('devforge.netcap');
+  if (Object.prototype.hasOwnProperty.call(XMLHttpRequest.prototype, MARK)) return { installed: true };
+  Object.defineProperty(XMLHttpRequest.prototype, MARK, { value: true });
   const LIMIT = 1000,
     BODY_MAX = 200 * 1024,
     FRAME_MAX = 200;
@@ -39,7 +55,9 @@
       if (h && h.forEach) h.forEach((v, k) => (o[String(k).toLowerCase()] = v));
       else if (Array.isArray(h)) h.forEach(([k, v]) => (o[String(k).toLowerCase()] = v));
       else if (h) Object.keys(h).forEach((k) => (o[k.toLowerCase()] = h[k]));
-    } catch (_) {}
+    } catch (_) {
+      /* headers of an unexpected shape are skipped */
+    }
     return o;
   };
   const bodyStr = (b) => {
@@ -84,7 +102,7 @@
   let rules = [];
   const hits = {};
   function compile(r) {
-    let test = () => false;
+    let test;
     try {
       if (r.regex) {
         const re = new RegExp(r.match, 'i');
@@ -192,7 +210,9 @@
     } finally {
       try {
         await reader.cancel();
-      } catch (_) {}
+      } catch (_) {
+        /* the stream is being abandoned anyway */
+      }
     }
     const buf = new Uint8Array(Math.min(n, BODY_MAX));
     let off = 0;
@@ -220,7 +240,9 @@
       let clone = null;
       try {
         clone = res.clone();
-      } catch (_) {}
+      } catch (_) {
+        /* a response that cannot be cloned is not recorded */
+      }
       if (clone) {
         backlog++;
         jobs.push(() => readLimited(clone, rec));
@@ -250,7 +272,7 @@
       error: null,
       initiator: initiator(),
     };
-    let isReq = false;
+    let isReq;
     try {
       isReq = typeof Request !== 'undefined' && input instanceof Request;
       rec.url = new URL(isReq ? input.url : String(input), document.baseURI).href;
@@ -259,7 +281,9 @@
       rec.reqBody = bodyStr(init && init.body);
       if (rec.reqBody == null && isReq && input.method !== 'GET' && input.method !== 'HEAD')
         rec.reqBody = '[body inside Request object: not readable without consuming it]';
-    } catch (_) {}
+    } catch (_) {
+      /* a body that cannot be read is recorded as unavailable */
+    }
     push(rec);
     const p = plan('fetch', rec.method, rec.url);
     if (p.matched.length) rec.rules = p.matched;
@@ -372,6 +396,21 @@
     };
     return XO.apply(this, arguments);
   };
+  const XA = XP.abort;
+  XP.abort = function () {
+    // An aborted request must not be sent when its latency rule expires.
+    if (this.__dfTimer) {
+      clearTimeout(this.__dfTimer);
+      this.__dfTimer = null;
+      const r = this.__df;
+      if (r) {
+        r.error = 'Aborted before it was sent (waiting out a latency rule)';
+        r.aborted = true;
+        touch(r);
+      }
+    }
+    return XA.apply(this, arguments);
+  };
   XP.setRequestHeader = function (k, v) {
     if (this.__df) this.__df.reqHeaders[String(k).toLowerCase()] = v;
     return XH.apply(this, arguments);
@@ -458,7 +497,9 @@
         try {
           XH.call(xhr, k, v);
           r.reqHeaders[k.toLowerCase()] = v;
-        } catch (_) {}
+        } catch (_) {
+          /* a header that cannot be read is skipped */
+        }
       }
       // One listener per XHR object, reporting into whichever request is current. Adding one per
       // send() would make a reused XHR write later responses into earlier records.
@@ -471,7 +512,16 @@
     };
     // Synchronous XHR cannot be delayed without blocking the page, so the delay is skipped there.
     if (p.delay && r.async) {
-      setTimeout(real, p.delay);
+      xhr.__dfTimer = setTimeout(() => {
+        xhr.__dfTimer = null;
+        try {
+          real();
+        } catch (e) {
+          // The page re-opened or discarded the request while it was waiting out the delay.
+          r.error = String((e && e.message) || e);
+          touch(r);
+        }
+      }, p.delay);
       return undefined;
     }
     return real();
@@ -657,10 +707,7 @@
     };
   };
   const startedAt = Date.now();
-  window.__dfNet = {
-    version: 2,
-    log,
-    startedAt,
+  const api = {
     changes(sinceRev) {
       const out = [];
       for (const e of log) if (e.rev > (sinceRev || 0)) out.push(summary(e));
@@ -672,14 +719,71 @@
       const { _t0, ...rest } = e;
       return JSON.parse(JSON.stringify(rest));
     },
+    // Successful fetch/XHR responses with bodies, for the site snapshot.
+    captured() {
+      return log
+        .filter((x) => (x.kind === 'fetch' || x.kind === 'xhr') && typeof x.resBody === 'string' && x.status >= 200 && x.status < 300)
+        .map((x) => ({ method: x.method, url: x.url, status: x.status, body: x.resBody.slice(0, 200000), reqBody: x.reqBody }));
+    },
     clear() {
       log.length = 0;
       byId.clear();
       stored = 0;
       rev++;
+      return true;
     },
     setRules,
     ruleHits: () => ({ ...hits }),
-    note: 'Page scripts share this realm and can alter or spoof this log; treat it as observational, not tamper-proof.',
+    ping: () => 'pong',
   };
+
+  /* ---------- private channel to the extension ---------- */
+  const rand = (bytes) => [...crypto.getRandomValues(new Uint8Array(bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const secret = rand(32);
+  // Not a recognisable prefix: scanning for "df"-style names must not find it.
+  const name = '_' + rand(10);
+  // The secret is compared on EVERY entry call, long after page scripts have run, and a page can
+  // replace String.prototype.charCodeAt (or hasOwnProperty, call, apply ...) with a function that
+  // records its `this`. So the comparison must not look anything up on a prototype at call time:
+  // these references are taken once, at load, before any page script (document_start), and bound so
+  // that later changes to the prototypes cannot reach them. The browser test in e2e/run.js
+  // ("poisons built-ins") fails if the secret ever reaches a replaced built-in.
+  const uncurry = Function.prototype.bind.bind(Function.prototype.call);
+  const charCodeAt = uncurry(String.prototype.charCodeAt);
+  const hasOwn = uncurry(Object.prototype.hasOwnProperty);
+  const same = (a, b) => {
+    if (typeof a !== 'string' || a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < b.length; i++) diff |= charCodeAt(a, i) ^ charCodeAt(b, i);
+    return diff === 0;
+  };
+  const entry = function (given, cmd, arg) {
+    // Without the secret this does nothing and says nothing, so it also reveals no state.
+    if (!same(given, secret)) return undefined;
+    const fn = typeof cmd === 'string' && hasOwn(api, cmd) ? api[cmd] : null;
+    return fn ? fn(arg) : undefined;
+  };
+  Object.defineProperty(window, name, { value: entry, enumerable: false, configurable: false, writable: false });
+
+  // Persistent capture (registered at document_start): swap the secret with netbridge.js, which runs
+  // in the extension's isolated world. Only while the document is still loading, so no page script
+  // can have registered a listener yet, and only once. This relies on the injection never happening
+  // mid-load: the panel injects on demand with executeScript's default timing (after the document is
+  // ready), so this branch is reached only by the document_start registration. Do not pass
+  // injectImmediately for this file (a page script could then ask for the key).
+  if (document.readyState === 'loading') {
+    const key = JSON.stringify({ n: name, s: secret });
+    const finish = () => {
+      document.removeEventListener('devforge:bridge-ready', onReady, true);
+      document.removeEventListener('DOMContentLoaded', finish, true);
+    };
+    const onReady = () => {
+      document.dispatchEvent(new CustomEvent('devforge:net-key', { detail: key }));
+      finish();
+    };
+    document.addEventListener('devforge:bridge-ready', onReady, true);
+    document.addEventListener('DOMContentLoaded', finish, true);
+    document.dispatchEvent(new CustomEvent('devforge:netcap-ready'));
+  }
+  return { n: name, s: secret };
 })();
