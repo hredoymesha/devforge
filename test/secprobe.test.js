@@ -149,19 +149,31 @@ test('source map reference and directory listing helpers', () => {
 
 test('regression: hostile repetitive scripts cannot make secret scanning slow (was quadratic)', () => {
   const MB = 1536 * 1024; // the per-script cap used by the scanner
-  const cases = {
-    token: 'token'.repeat(MB / 5),
-    secret_: 'secret_'.repeat(MB / 7),
-    'a.token-': 'a.token-'.repeat(MB / 8),
-    'api_key = ': 'api_key = '.repeat(MB / 10),
-    'long value': 'secret="' + 'A1b2'.repeat(MB / 4),
-    'one long word': 'a'.repeat(MB),
+  // Compare how the time grows instead of using a fixed limit: doubling the input should about
+  // double the time when the scan is linear (a quadratic scan roughly quadruples it). A fixed
+  // millisecond limit failed on slow CI machines, so only a very generous limit is kept as a backstop.
+  const best = (text) => {
+    let min = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const t0 = process.hrtime.bigint();
+      P.scanSecrets(text, 'x');
+      min = Math.min(min, Number(process.hrtime.bigint() - t0) / 1e6);
+    }
+    return min;
   };
-  for (const [label, text] of Object.entries(cases)) {
-    const t0 = process.hrtime.bigint();
-    P.scanSecrets(text, 'x');
-    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-    assert.ok(ms < 1500, `${label.trim()}: ${Math.round(ms)} ms for ${text.length} chars`);
+  const cases = {
+    token: (n) => 'token'.repeat(n / 5),
+    secret_: (n) => 'secret_'.repeat(n / 7),
+    'a.token-': (n) => 'a.token-'.repeat(n / 8),
+    'api_key = ': (n) => 'api_key = '.repeat(n / 10),
+    'long value': (n) => 'secret="' + 'A1b2'.repeat(n / 4),
+    'one long word': (n) => 'a'.repeat(n),
+  };
+  for (const [label, make] of Object.entries(cases)) {
+    const half = best(make(MB / 2));
+    const full = best(make(MB));
+    assert.ok(full < 10000, `${label.trim()}: ${Math.round(full)} ms for ${MB} chars`);
+    assert.ok(full < 3 * half + 100, `${label.trim()}: ${Math.round(half)} ms at half size, ${Math.round(full)} ms at full size`);
   }
 });
 
