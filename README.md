@@ -272,7 +272,7 @@ accessibility basics, and before/after behaviour of fixed bugs against the origi
 `node e2e/run.js --shots <dir>` also saves screenshots.
 
 For a Chrome Web Store upload, zip the extension files only (leave out `README.md`,
-`CHANGELOG.md`, `CLAUDE.md`, `LICENSE`, `.gitignore`, `.gitattributes`, `package.json`, `docs/`,
+`CHANGELOG.md`, `LICENSE`, `.gitignore`, `.gitattributes`, `package.json`, `docs/`,
 `scripts/`, `test/` and `e2e/`). Keep the manifest `description`
 at 132 characters or fewer.
 
