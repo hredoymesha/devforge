@@ -1,0 +1,817 @@
+/*
+ * Network capture and interception, injected into the page's MAIN world on request (or registered
+ * to run at document_start when "capture from page start" is on).
+ *
+ * It sees fetch / XHR / WebSocket / EventSource / sendBeacon calls made by page scripts after it
+ * runs. Requests the browser makes itself (images, stylesheets, navigations) never pass through
+ * here; the panel shows those from the Performance API as timing-only rows.
+ *
+ * Interception rules are evaluated per request, in order:
+ *   delay    adds latency (delays from several rules add up)
+ *   headers  sets request headers
+ *   block    fails the request like a network error           (terminal)
+ *   mock     answers with a canned response, nothing is sent   (terminal)
+ *   redirect sends the request to another URL                  (terminal)
+ */
+/*
+ * Who can read the capture log: only the extension. The log, the rules and every record live in this
+ * closure; there is no page-visible global. The one entry point is a function stored under a random,
+ * non-enumerable, non-configurable property name, and it answers only to a 256-bit secret that is
+ * generated here and handed to the extension without passing through the page:
+ *   - injected on demand: the secret is this file's completion value, which executeScript returns
+ *     straight to the extension;
+ *   - registered at document_start: netbridge.js (isolated world) and this file swap it with a
+ *     one-time handshake that finishes before any page script has run.
+ * A page script can still notice that capture exists (the fetch wrapper is visible) and can tamper
+ * with built-ins before this file runs, because it shares the JavaScript realm; it cannot read the
+ * log or call the entry point without the secret.
+ */
+(() => {
+  // A marker on XMLHttpRequest.prototype tells a second injection that capture is already running.
+  const MARK = Symbol.for('k9f3c1a07e2b4d58a');
+  if (Object.prototype.hasOwnProperty.call(XMLHttpRequest.prototype, MARK)) return { installed: true };
+  Object.defineProperty(XMLHttpRequest.prototype, MARK, { value: true });
+  // LIMIT, BODY_MAX and TOTAL_MAX can be changed from the panel (Settings → Network capture size)
+  // through setLimits(); the values below are the defaults.
+  let LIMIT = 1000,
+    BODY_MAX = 200 * 1024;
+  const FRAME_MAX = 200;
+  const log = [];
+  const byId = new Map();
+  let seq = 0,
+    rev = 0;
+  const now = () => Math.round(performance.now());
+  const push = (e) => {
+    while (log.length >= LIMIT) byId.delete(log.shift().id);
+    log.push(e);
+    byId.set(e.id, e);
+    touch(e);
+  };
+  // Every change bumps a revision so the panel can poll for "what changed since rev N".
+  const touch = (e) => {
+    e.rev = ++rev;
+  };
+  const hdrObj = (h) => {
+    const o = {};
+    try {
+      if (h && h.forEach) h.forEach((v, k) => (o[String(k).toLowerCase()] = v));
+      else if (Array.isArray(h)) h.forEach(([k, v]) => (o[String(k).toLowerCase()] = v));
+      else if (h) Object.keys(h).forEach((k) => (o[k.toLowerCase()] = h[k]));
+    } catch (_) {
+      /* headers of an unexpected shape are skipped */
+    }
+    return o;
+  };
+  const bodyStr = (b) => {
+    try {
+      if (b == null) return null;
+      if (typeof b === 'string') return b.slice(0, BODY_MAX);
+      if (b instanceof URLSearchParams) return b.toString();
+      if (b instanceof FormData) {
+        const o = [];
+        b.forEach((v, k) =>
+          o.push(
+            k + '=' + (typeof v === 'string' ? v : '[File ' + v.name + ', ' + v.size + ' bytes]')
+          )
+        );
+        return o.join('&');
+      }
+      if (b instanceof Blob) return '[Blob ' + b.size + ' bytes, ' + (b.type || 'no type') + ']';
+      if (b instanceof ArrayBuffer || ArrayBuffer.isView(b))
+        return '[binary ' + b.byteLength + ' bytes]';
+      if (typeof ReadableStream !== 'undefined' && b instanceof ReadableStream) return '[stream]';
+      return String(b).slice(0, 2000);
+    } catch (_) {
+      return '[unreadable]';
+    }
+  };
+  const initiator = () => {
+    try {
+      // The first line is "Error"; frames from this file (initiator, the wrapper, the proxy trap) are dropped.
+      return (new Error().stack || '')
+        .split('\n')
+        .slice(1)
+        .filter((s) => !/\/netcap\.js/.test(s))
+        .slice(0, 5)
+        .map((s) => s.trim())
+        .join(' | ');
+    } catch (_) {
+      return '';
+    }
+  };
+  // State for each XMLHttpRequest / WebSocket / EventSource lives in WeakMaps, never as properties on
+  // the page's own objects (a page could list those). Patched functions are Proxies around the
+  // originals: they keep name, length and the native-looking toString(), and need no own property.
+  const XSTATE = new WeakMap();
+  const S = (o) => {
+    let s = XSTATE.get(o);
+    if (!s) XSTATE.set(o, (s = {}));
+    return s;
+  };
+  const proxyOf = (orig, impl) => new Proxy(orig, { apply: (_t, self, args) => impl.apply(self, args) });
+  const textual = (ct) => /json|text|xml|javascript|html|x-www-form|graphql|csv/i.test(ct || '');
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  /* ---------- interception rules ---------- */
+  let rules = [];
+  const hits = {};
+  function compile(r) {
+    let test;
+    try {
+      if (r.regex) {
+        const re = new RegExp(r.match, 'i');
+        test = (u) => re.test(u);
+      } else if (r.match) {
+        const needle = String(r.match).toLowerCase();
+        test = (u) => u.toLowerCase().includes(needle);
+      } else test = () => true;
+    } catch (_) {
+      test = () => false; // an invalid regex disables the rule rather than throwing in page code
+    }
+    return { ...r, test };
+  }
+  function setRules(list) {
+    rules = (Array.isArray(list) ? list : []).filter((r) => r && r.enabled !== false).map(compile);
+    return { active: rules.length };
+  }
+  function plan(kind, method, url) {
+    const p = { delay: 0, headers: null, terminal: null, matched: [] };
+    for (const r of rules) {
+      if (r.kinds && r.kinds !== 'any' && r.kinds !== kind) continue;
+      if (r.method && r.method !== '*' && r.method.toUpperCase() !== method) continue;
+      if (!r.test(url)) continue;
+      hits[r.id] = (hits[r.id] || 0) + 1;
+      p.matched.push({ id: r.id, action: r.action });
+      if (r.action === 'delay') p.delay += Math.min(Math.max(+r.delay || 0, 0), 60000);
+      else if (r.action === 'headers') p.headers = { ...(p.headers || {}), ...(r.headers || {}) };
+      else if (!p.terminal) p.terminal = r;
+    }
+    return p;
+  }
+  const NULL_BODY = new Set([101, 204, 205, 304]);
+  function mockParts(rule) {
+    const status = Math.min(Math.max(parseInt(rule.status, 10) || 200, 200), 599);
+    const headers = {
+      'content-type': rule.contentType || 'application/json',
+      ...(rule.headers || {}),
+    };
+    headers['x-devforge-mock'] = String(rule.id || '1');
+    return { status, headers, body: NULL_BODY.has(status) ? null : String(rule.body ?? '') };
+  }
+  const resolve = (u, base) => {
+    try {
+      return new URL(u, base).href;
+    } catch (_) {
+      return base;
+    }
+  };
+
+  /* ---------- bounded body reading ---------- */
+  let TOTAL_MAX = 16 * 1024 * 1024;
+  const MAX_ACTIVE = 3,
+    MAX_BACKLOG = 12,
+    SKIP_ABOVE = 2 * 1024 * 1024;
+  let active = 0,
+    backlog = 0,
+    stored = 0;
+  const jobs = [];
+  const account = (rec, text) => {
+    rec.resBody = text;
+    rec.size = rec.size || text.length;
+    stored += text.length;
+    if (stored > TOTAL_MAX) {
+      for (const r of log) {
+        if (stored <= TOTAL_MAX * 0.75) break;
+        if (r.resBody && r !== rec && r.resBody[0] !== '[') {
+          stored -= r.resBody.length;
+          r.resBody = '[evicted: capture memory budget reached]';
+          touch(r);
+        }
+      }
+    }
+    touch(rec);
+  };
+  const pump = () => {
+    while (active < MAX_ACTIVE && jobs.length) {
+      const j = jobs.shift();
+      backlog--;
+      active++;
+      j()
+        .catch(() => {})
+        .finally(() => {
+          active--;
+          pump();
+        });
+    }
+  };
+  async function readLimited(clone, rec) {
+    const reader = clone.body && clone.body.getReader ? clone.body.getReader() : null;
+    if (!reader) {
+      account(rec, '');
+      return;
+    }
+    const chunks = [];
+    let n = 0,
+      over = false;
+    try {
+      while (n <= BODY_MAX) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        n += value.length;
+      }
+      if (n > BODY_MAX) over = true;
+    } finally {
+      try {
+        await reader.cancel();
+      } catch (_) {
+        /* the stream is being abandoned anyway */
+      }
+    }
+    const buf = new Uint8Array(Math.min(n, BODY_MAX));
+    let off = 0;
+    for (const c of chunks) {
+      const take = Math.min(c.length, buf.length - off);
+      if (take <= 0) break;
+      buf.set(c.subarray(0, take), off);
+      off += take;
+    }
+    rec.resTruncated = over;
+    account(rec, new TextDecoder('utf-8').decode(buf));
+  }
+  function captureResponse(rec, res) {
+    const ct = res.headers.get('content-type');
+    const len = +res.headers.get('content-length') || 0;
+    if (len) rec.size = len;
+    if (res.type === 'opaque' || res.type === 'opaqueredirect')
+      rec.resBody = '[opaque response: cross-origin without CORS, body unreadable]';
+    else if (!textual(ct)) rec.resBody = null;
+    else if (len > SKIP_ABOVE)
+      rec.resBody =
+        '[body not captured: ' + len + ' bytes exceeds the ' + SKIP_ABOVE + ' byte limit]';
+    else if (backlog >= MAX_BACKLOG) rec.resBody = '[body not captured: capture backlog full]';
+    else {
+      let clone = null;
+      try {
+        clone = res.clone();
+      } catch (_) {
+        /* a response that cannot be cloned is not recorded */
+      }
+      if (clone) {
+        backlog++;
+        jobs.push(() => readLimited(clone, rec));
+        pump();
+      }
+    }
+  }
+
+  /* ---------- fetch ---------- */
+  const of = window.fetch;
+  window.fetch = proxyOf(of, function (input, init) {
+    const id = ++seq,
+      t0 = performance.now();
+    const rec = {
+      id,
+      kind: 'fetch',
+      t: Date.now(),
+      start: now(),
+      method: 'GET',
+      url: '',
+      reqHeaders: {},
+      reqBody: null,
+      status: null,
+      resHeaders: {},
+      resBody: null,
+      ms: null,
+      error: null,
+      initiator: initiator(),
+    };
+    let isReq;
+    try {
+      isReq = typeof Request !== 'undefined' && input instanceof Request;
+      rec.url = new URL(isReq ? input.url : String(input), document.baseURI).href;
+      rec.method = ((init && init.method) || (isReq && input.method) || 'GET').toUpperCase();
+      rec.reqHeaders = { ...hdrObj(isReq && input.headers), ...hdrObj(init && init.headers) };
+      rec.reqBody = bodyStr(init && init.body);
+      if (rec.reqBody == null && isReq && input.method !== 'GET' && input.method !== 'HEAD')
+        rec.reqBody = '[body inside Request object: not readable without consuming it]';
+    } catch (_) {
+      /* a body that cannot be read is recorded as unavailable */
+    }
+    push(rec);
+    const p = plan('fetch', rec.method, rec.url);
+    if (p.matched.length) rec.rules = p.matched;
+    const self = this;
+    const finish = (res) => {
+      rec.status = res.status;
+      rec.statusText = res.statusText;
+      rec.resHeaders = hdrObj(res.headers);
+      rec.type = res.type;
+      rec.redirected = res.redirected || undefined;
+      rec.ms = Math.round(performance.now() - t0);
+      touch(rec);
+      captureResponse(rec, res);
+      return res;
+    };
+    const fail = (err) => {
+      rec.error = String((err && err.message) || err);
+      rec.aborted = !!(err && err.name === 'AbortError') || undefined;
+      rec.ms = Math.round(performance.now() - t0);
+      touch(rec);
+      throw err;
+    };
+    if (!p.matched.length) return of.apply(self, arguments).then(finish, fail);
+
+    const args = arguments;
+    return (async () => {
+      if (p.delay) await sleep(p.delay);
+      const term = p.terminal;
+      if (term && term.action === 'block') {
+        rec.blocked = true;
+        return fail(new TypeError('Failed to fetch (blocked by a DevForge rule)'));
+      }
+      if (term && term.action === 'mock') {
+        const m = mockParts(term);
+        rec.mocked = true;
+        const res = new Response(m.body, { status: m.status, headers: m.headers });
+        rec.status = m.status;
+        rec.resHeaders = m.headers;
+        rec.resBody = m.body;
+        rec.size = m.body ? m.body.length : 0;
+        rec.ms = Math.round(performance.now() - t0);
+        touch(rec);
+        return res;
+      }
+      let callArgs = args;
+      if (p.headers || (term && term.action === 'redirect')) {
+        const base = new Request(input, init);
+        const url = term && term.action === 'redirect' ? resolve(term.redirect, rec.url) : base.url;
+        const next = new Request(url, base);
+        for (const [k, v] of Object.entries(p.headers || {})) {
+          try {
+            next.headers.set(k, v);
+            rec.reqHeaders[k.toLowerCase()] = v;
+          } catch (_) {
+            /* forbidden header names (Cookie, Host, ...) are silently refused by the browser */
+          }
+        }
+        if (url !== rec.url) rec.redirectedTo = url;
+        callArgs = [next];
+        touch(rec);
+      }
+      return of.apply(self, callArgs).then(finish, fail);
+    })();
+  });
+
+  /* ---------- XMLHttpRequest ---------- */
+  const XP = XMLHttpRequest.prototype;
+  const XO = XP.open,
+    XS = XP.send,
+    XH = XP.setRequestHeader;
+  const FAKED = [
+    'readyState',
+    'status',
+    'statusText',
+    'responseText',
+    'response',
+    'responseURL',
+    'getAllResponseHeaders',
+    'getResponseHeader',
+  ];
+  XP.open = proxyOf(XO, function (m, u, async) {
+    // A reused XHR that was mocked last time still carries the fake own properties; drop them so
+    // the native getters show through again.
+    if (S(this).faked) {
+      FAKED.forEach((k) => delete this[k]);
+      S(this).faked = false;
+    }
+    let url;
+    try {
+      url = new URL(String(u), document.baseURI).href;
+    } catch (_) {
+      url = String(u);
+    }
+    S(this).rec = {
+      id: ++seq,
+      kind: 'xhr',
+      t: Date.now(),
+      start: null,
+      method: String(m).toUpperCase(),
+      url,
+      async: async !== false,
+      reqHeaders: {},
+      reqBody: null,
+      status: null,
+      resHeaders: {},
+      resBody: null,
+      ms: null,
+      error: null,
+      initiator: initiator(),
+    };
+    return XO.apply(this, arguments);
+  });
+  const XA = XP.abort;
+  XP.abort = proxyOf(XA, function () {
+    // An aborted request must not be sent when its latency rule expires.
+    if (S(this).timer) {
+      clearTimeout(S(this).timer);
+      S(this).timer = null;
+      const r = S(this).rec;
+      if (r) {
+        r.error = 'Aborted before it was sent (waiting out a latency rule)';
+        r.aborted = true;
+        touch(r);
+      }
+    }
+    return XA.apply(this, arguments);
+  });
+  XP.setRequestHeader = proxyOf(XH, function (k, v) {
+    const r = S(this).rec;
+    if (r) r.reqHeaders[String(k).toLowerCase()] = v;
+    return XH.apply(this, arguments);
+  });
+  // Answers an XHR without touching the network: own-property getters shadow the native ones.
+  function fakeXhr(xhr, r, { status, headers, body, error }) {
+    const def = (k, val) => Object.defineProperty(xhr, k, { configurable: true, get: () => val });
+    const text = body == null ? '' : body;
+    const rt = xhr.responseType;
+    let response = text;
+    if (rt === 'json') {
+      try {
+        response = JSON.parse(text);
+      } catch (_) {
+        response = null;
+      }
+    } else if (rt && rt !== 'text') response = null;
+    def('readyState', 4);
+    def('status', error ? 0 : status);
+    def('statusText', error ? '' : 'OK (DevForge mock)');
+    def('responseText', text);
+    def('response', response);
+    def('responseURL', r.url);
+    const hdrs = headers || {};
+    xhr.getAllResponseHeaders = () =>
+      Object.entries(hdrs)
+        .map(([k, v]) => k + ': ' + v)
+        .join('\r\n');
+    xhr.getResponseHeader = (k) => hdrs[String(k).toLowerCase()] ?? null;
+    S(xhr).faked = true;
+    r.status = error ? 0 : status;
+    r.resHeaders = hdrs;
+    r.resBody = error ? null : text;
+    r.size = text.length;
+    r.ms = Math.round(performance.now() - r._t0);
+    if (error) {
+      r.error = 'Blocked by a DevForge rule';
+      r.blocked = true;
+    }
+    touch(r);
+    const fire = (type) =>
+      xhr.dispatchEvent(
+        type === 'readystatechange'
+          ? new Event(type)
+          : new ProgressEvent(type, {
+              lengthComputable: true,
+              loaded: text.length,
+              total: text.length,
+            })
+      );
+    setTimeout(() => {
+      fire('readystatechange');
+      fire(error ? 'error' : 'load');
+      fire('loadend');
+    }, 0);
+  }
+  XP.send = proxyOf(XS, function (body) {
+    const r = S(this).rec;
+    if (!r) return XS.apply(this, arguments);
+    r.reqBody = bodyStr(body);
+    r.start = now();
+    r._t0 = performance.now();
+    push(r);
+    const p = plan('xhr', r.method, r.url);
+    if (p.matched.length) r.rules = p.matched;
+    const xhr = this;
+    const real = () => {
+      const term = p.terminal;
+      if (term && term.action === 'block') return fakeXhr(xhr, r, { error: true });
+      if (term && term.action === 'mock') {
+        r.mocked = true;
+        const m = mockParts(term);
+        return fakeXhr(xhr, r, { status: m.status, headers: m.headers, body: m.body });
+      }
+      if (term && term.action === 'redirect') {
+        // Re-opening drops request headers, so replay the ones recorded so far.
+        const url = resolve(term.redirect, r.url);
+        const saved = { ...r.reqHeaders };
+        XO.call(xhr, r.method, url, r.async);
+        for (const [k, v] of Object.entries(saved)) XH.call(xhr, k, v);
+        r.redirectedTo = url;
+      }
+      for (const [k, v] of Object.entries(p.headers || {})) {
+        try {
+          XH.call(xhr, k, v);
+          r.reqHeaders[k.toLowerCase()] = v;
+        } catch (_) {
+          /* a header that cannot be read is skipped */
+        }
+      }
+      // One listener per XHR object, reporting into whichever request is current. Adding one per
+      // send() would make a reused XHR write later responses into earlier records.
+      S(xhr).active = r;
+      if (!S(xhr).hooked) {
+        S(xhr).hooked = true;
+        xhr.addEventListener('loadend', () => xhrDone(xhr));
+      }
+      return XS.call(xhr, body);
+    };
+    // Synchronous XHR cannot be delayed without blocking the page, so the delay is skipped there.
+    if (p.delay && r.async) {
+      S(xhr).timer = setTimeout(() => {
+        S(xhr).timer = null;
+        try {
+          real();
+        } catch (e) {
+          // The page re-opened or discarded the request while it was waiting out the delay.
+          r.error = String((e && e.message) || e);
+          touch(r);
+        }
+      }, p.delay);
+      return undefined;
+    }
+    return real();
+  });
+  function xhrDone(xhr) {
+    const r = S(xhr).active;
+    if (!r || S(xhr).faked) return;
+    S(xhr).active = null;
+    r.status = xhr.status;
+    r.statusText = xhr.statusText;
+    r.ms = Math.round(performance.now() - r._t0);
+    (xhr.getAllResponseHeaders() || '')
+      .trim()
+      .split(/\r?\n/)
+      .forEach((l) => {
+        const i = l.indexOf(':');
+        if (i > 0) r.resHeaders[l.slice(0, i).trim().toLowerCase()] = l.slice(i + 1).trim();
+      });
+    try {
+      const len = +xhr.getResponseHeader('content-length') || 0;
+      if (len) r.size = len;
+      if (len > SKIP_ABOVE)
+        r.resBody =
+          '[body not captured: ' + len + ' bytes exceeds the ' + SKIP_ABOVE + ' byte limit]';
+      else if (xhr.responseType === '' || xhr.responseType === 'text') {
+        const t = xhr.responseText;
+        r.resTruncated = t.length > BODY_MAX;
+        account(r, t.length > BODY_MAX ? t.slice(0, BODY_MAX) : t);
+      } else if (xhr.responseType === 'json') {
+        const t = JSON.stringify(xhr.response);
+        r.resTruncated = t.length > BODY_MAX;
+        account(r, t.slice(0, BODY_MAX));
+      } else r.resBody = '[' + xhr.responseType + ' response]';
+    } catch (_) {
+      /* responseText throws for some responseTypes; the headers above are still useful */
+    }
+    if (xhr.status === 0 && !r.error)
+      r.error = 'Request failed, was aborted or was blocked (status 0)';
+    touch(r);
+  }
+
+  /* ---------- WebSocket ---------- */
+  const OW = window.WebSocket;
+  if (OW) {
+    const frame = (rec, dir, d) => {
+      if (dir === 'in') rec.received++;
+      else rec.sent++;
+      const size = typeof d === 'string' ? d.length : (d && (d.byteLength ?? d.size)) || 0;
+      rec.bytes = (rec.bytes || 0) + size;
+      if (rec.frames.length >= FRAME_MAX) rec.frames.shift();
+      rec.frames.push({
+        dir,
+        t: now() - rec.start,
+        size,
+        data: typeof d === 'string' ? d.slice(0, 2000) : '[binary ' + size + ' bytes]',
+      });
+      touch(rec);
+    };
+    window.WebSocket = new Proxy(OW, {
+      construct(target, args, newTarget) {
+        const ws = Reflect.construct(target, args, newTarget);
+        const rec = {
+          id: ++seq,
+          kind: 'websocket',
+          t: Date.now(),
+          start: now(),
+          method: 'WS',
+          url: String(ws.url || args[0]),
+          status: null,
+          sent: 0,
+          received: 0,
+          frames: [],
+          error: null,
+          initiator: initiator(),
+        };
+        S(ws).rec = rec;
+        push(rec);
+        ws.addEventListener('open', () => {
+          rec.status = 101;
+          rec.protocol = ws.protocol || undefined;
+          rec.ms = now() - rec.start;
+          touch(rec);
+        });
+        ws.addEventListener('message', (e) => frame(rec, 'in', e.data));
+        ws.addEventListener('error', () => {
+          rec.error = 'WebSocket error';
+          touch(rec);
+        });
+        ws.addEventListener('close', (e) => {
+          rec.closed = { code: e.code, reason: e.reason, clean: e.wasClean };
+          touch(rec);
+        });
+        return ws;
+      },
+    });
+    const os = OW.prototype.send;
+    OW.prototype.send = proxyOf(os, function (d) {
+      const rec = S(this).rec;
+      if (rec) frame(rec, 'out', d);
+      return os.apply(this, arguments);
+    });
+  }
+
+  /* ---------- EventSource ---------- */
+  const OE = window.EventSource;
+  if (OE) {
+    window.EventSource = new Proxy(OE, {
+      construct(target, args, newTarget) {
+        const es = Reflect.construct(target, args, newTarget);
+        const rec = {
+          id: ++seq,
+          kind: 'sse',
+          t: Date.now(),
+          start: now(),
+          method: 'GET',
+          url: es.url,
+          status: null,
+          received: 0,
+          frames: [],
+          error: null,
+          initiator: initiator(),
+        };
+        push(rec);
+        es.addEventListener('open', () => {
+          rec.status = 200;
+          touch(rec);
+        });
+        es.addEventListener('message', (e) => {
+          rec.received++;
+          if (rec.frames.length >= FRAME_MAX) rec.frames.shift();
+          rec.frames.push({ dir: 'in', t: now() - rec.start, data: String(e.data).slice(0, 2000) });
+          touch(rec);
+        });
+        es.addEventListener('error', () => {
+          rec.error = es.readyState === 2 ? 'EventSource closed' : 'EventSource error (reconnecting)';
+          touch(rec);
+        });
+        return es;
+      },
+    });
+  }
+
+  /* ---------- sendBeacon ---------- */
+  if (navigator.sendBeacon && typeof Navigator !== 'undefined') {
+    const ob = Navigator.prototype.sendBeacon;
+    Navigator.prototype.sendBeacon = proxyOf(ob, function (url, data) {
+      const rec = {
+        id: ++seq,
+        kind: 'beacon',
+        t: Date.now(),
+        start: now(),
+        method: 'POST',
+        url: resolve(String(url), document.baseURI),
+        reqBody: bodyStr(data),
+        status: null,
+        error: null,
+        initiator: initiator(),
+      };
+      push(rec);
+      const p = plan('beacon', 'POST', rec.url);
+      if (p.matched.length) rec.rules = p.matched;
+      if (p.terminal && p.terminal.action === 'block') {
+        rec.blocked = true;
+        rec.error = 'Blocked by a DevForge rule';
+        touch(rec);
+        return false;
+      }
+      const queued = ob.apply(this, arguments);
+      rec.queued = queued;
+      if (!queued) rec.error = 'Browser refused to queue the beacon';
+      touch(rec);
+      return queued;
+    });
+  }
+
+  /* ---------- panel API ---------- */
+  // Rows without bodies, for cheap polling. Bodies are fetched per request with get().
+  const summary = (e) => {
+    const { resBody, reqBody, frames, _t0, ...rest } = e;
+    return {
+      ...rest,
+      reqBodySize: reqBody ? reqBody.length : 0,
+      resBodySize: resBody ? resBody.length : 0,
+      frameCount: frames ? frames.length : undefined,
+    };
+  };
+  const startedAt = Date.now();
+  const api = {
+    changes(sinceRev) {
+      const out = [];
+      for (const e of log) if (e.rev > (sinceRev || 0)) out.push(summary(e));
+      return { rev, startedAt, ids: log.map((e) => e.id), entries: out, rules: rules.length };
+    },
+    get(id) {
+      const e = byId.get(id);
+      if (!e) return null;
+      const { _t0, ...rest } = e;
+      return JSON.parse(JSON.stringify(rest));
+    },
+    // Successful fetch/XHR responses with bodies, for the site snapshot.
+    captured() {
+      return log
+        .filter((x) => (x.kind === 'fetch' || x.kind === 'xhr') && typeof x.resBody === 'string' && x.status >= 200 && x.status < 300)
+        .map((x) => ({ method: x.method, url: x.url, status: x.status, body: x.resBody.slice(0, 200000), reqBody: x.reqBody }));
+    },
+    // Settings → Network capture size. Values are clamped; lowering a limit trims what is held.
+    setLimits(l) {
+      const n = (v, lo, hi, d) => Math.min(hi, Math.max(lo, Math.round(+v) || d));
+      if (l && typeof l === 'object') {
+        LIMIT = n(l.entries, 100, 5000, LIMIT);
+        BODY_MAX = n(l.bodyKB, 10, 2048, BODY_MAX / 1024) * 1024;
+        TOTAL_MAX = n(l.totalMB, 2, 64, TOTAL_MAX / 1048576) * 1048576;
+        while (log.length > LIMIT) byId.delete(log.shift().id);
+      }
+      return { entries: LIMIT, bodyKB: BODY_MAX / 1024, totalMB: TOTAL_MAX / 1048576, held: log.length, storedKB: Math.round(stored / 1024) };
+    },
+    clear() {
+      log.length = 0;
+      byId.clear();
+      stored = 0;
+      rev++;
+      return true;
+    },
+    setRules,
+    ruleHits: () => ({ ...hits }),
+    ping: () => 'pong',
+  };
+
+  /* ---------- private channel to the extension ---------- */
+  const rand = (bytes) => [...crypto.getRandomValues(new Uint8Array(bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const secret = rand(32);
+  // Not a recognisable prefix: scanning for "df"-style names must not find it.
+  const name = '_' + rand(10);
+  // The secret is compared on EVERY entry call, long after page scripts have run, and a page can
+  // replace String.prototype.charCodeAt (or hasOwnProperty, call, apply ...) with a function that
+  // records its `this`. So the comparison must not look anything up on a prototype at call time:
+  // these references are taken once, at load, before any page script (document_start), and bound so
+  // that later changes to the prototypes cannot reach them. The browser test in e2e/run.js
+  // ("poisons built-ins") fails if the secret ever reaches a replaced built-in.
+  const uncurry = Function.prototype.bind.bind(Function.prototype.call);
+  const charCodeAt = uncurry(String.prototype.charCodeAt);
+  const hasOwn = uncurry(Object.prototype.hasOwnProperty);
+  const same = (a, b) => {
+    if (typeof a !== 'string' || a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < b.length; i++) diff |= charCodeAt(a, i) ^ charCodeAt(b, i);
+    return diff === 0;
+  };
+  const entry = function (given, cmd, arg) {
+    // Without the secret this does nothing and says nothing, so it also reveals no state.
+    if (!same(given, secret)) return undefined;
+    const fn = typeof cmd === 'string' && hasOwn(api, cmd) ? api[cmd] : null;
+    return fn ? fn(arg) : undefined;
+  };
+  Object.defineProperty(window, name, { value: entry, enumerable: false, configurable: false, writable: false });
+
+  // Persistent capture (registered at document_start): swap the secret with netbridge.js, which runs
+  // in the extension's isolated world. Only while the document is still loading, so no page script
+  // can have registered a listener yet, and only once. This relies on the injection never happening
+  // mid-load: the panel injects on demand with executeScript's default timing (after the document is
+  // ready), so this branch is reached only by the document_start registration. Do not pass
+  // injectImmediately for this file (a page script could then ask for the key).
+  if (document.readyState === 'loading') {
+    const key = JSON.stringify({ n: name, s: secret });
+    const finish = () => {
+      document.removeEventListener('devforge:bridge-ready', onReady, true);
+      document.removeEventListener('DOMContentLoaded', finish, true);
+    };
+    const onReady = () => {
+      document.dispatchEvent(new CustomEvent('devforge:net-key', { detail: key }));
+      finish();
+    };
+    document.addEventListener('devforge:bridge-ready', onReady, true);
+    document.addEventListener('DOMContentLoaded', finish, true);
+    document.dispatchEvent(new CustomEvent('devforge:netcap-ready'));
+  }
+  return { n: name, s: secret };
+})();
