@@ -62,7 +62,10 @@ async function openPanel(env, targetUrl) {
   // Trusted Types: the panel's CSP refuses plain strings at HTML sinks. Record every refusal.
   await panel.addInitScript(() => {
     window.__ttv = [];
-    document.addEventListener('securitypolicyviolation', (e) => window.__ttv.push(e.violatedDirective + ' ' + (e.sample || '')));
+    // Keep where each refusal came from, so a failure in CI says which code caused it.
+    document.addEventListener('securitypolicyviolation', (e) =>
+      window.__ttv.push(e.violatedDirective + ' ' + (e.sample || '') + ' [' + (e.sourceFile || 'no source') + ':' + e.lineNumber + ':' + e.columnNumber + ' blocked=' + e.blockedURI + ']')
+    );
   });
   const errors = [];
   panel.on('pageerror', (e) => errors.push(e.message));
@@ -73,7 +76,7 @@ async function openPanel(env, targetUrl) {
   const close = panel.close.bind(panel);
   panel.close = async () => {
     const ttv = await panel.evaluate(() => window.__ttv || []).catch(() => []);
-    check('no Trusted Types violation in this panel session', ttv.length === 0, ttv.join(' | '));
+    check('no Trusted Types violation in this panel session', ttv.length === 0, ttv.length + ' refusal(s), first 5: ' + ttv.slice(0, 5).join(' | '));
     await close();
     await target.close();
   };
