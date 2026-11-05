@@ -105,7 +105,7 @@ function navBar(nav) {
 const perfKey = (url) => DFKeep.keyFor(DFPerfHist.keyFor(url));
 async function perfRecord(url, d) {
   const key = perfKey(url);
-  const store = (await chrome.storage.local.get(DFKeep.PERF_KEY))[DFKeep.PERF_KEY] || {};
+  const store = await DFKeep.readPerf();
   let next = DFPerfHist.add(store, key, DFPerfHist.pointFrom(d), DF.state.settings.perfHistoryLimit);
   const pages = Object.keys(next);
   if (pages.length > 100) {
@@ -165,7 +165,7 @@ function perfHistorySection(url, points, redraw) {
     { id: 'perf-metric', 'aria-label': 'Metric to chart', on: { change: (e) => { DF.state.perfMetric = e.target.value; redraw(); } } },
     Object.entries(DFPerfHist.METRICS).map(([k, m]) => h('option', { value: k, selected: k === metric }, m.label))
   );
-  box.append(h('div', { class: 'row' }, h('label', null, 'Metric ', pick), h('button', { on: { click: async () => { const store = (await chrome.storage.local.get(DFKeep.PERF_KEY))[DFKeep.PERF_KEY] || {}; delete store[perfKey(url)]; await chrome.storage.local.set({ [DFKeep.PERF_KEY]: store }); toast('History for this page cleared'); redraw(); } } }, 'Clear this page\'s history')));
+  box.append(h('div', { class: 'row' }, h('label', null, 'Metric ', pick), h('button', { on: { click: async () => { const store = await DFKeep.readPerf(); delete store[perfKey(url)]; await chrome.storage.local.set({ [DFKeep.PERF_KEY]: store }); toast('History for this page cleared'); redraw(); } } }, 'Clear this page\'s history')));
   if (points.length < 2 || !sum || sum.n < 2) {
     box.append(h('div', { class: 'sev-info', id: 'perf-hist-hint' }, points.length ? 'One reading saved so far. Run “Refresh vitals” again, after interacting with the page or reloading it, to see how it changes.' : 'No readings saved yet for this page.'));
   } else {
@@ -237,7 +237,7 @@ registerTab('perf', 'Perf', async (v) => {
   const drawHistory = async (d) => {
     try {
       const url = DF.state.url;
-      const pts = d ? await perfRecord(url, d) : ((await chrome.storage.local.get(DFKeep.PERF_KEY))[DFKeep.PERF_KEY] || {})[perfKey(url)] || [];
+      const pts = d ? await perfRecord(url, d) : (await DFKeep.readPerf())[perfKey(url)] || [];
       clear(hist).append(perfHistorySection(url, pts, () => drawHistory(null)));
     } catch (e) {
       clear(hist).append(h('div', { class: 'sev-info' }, 'History is unavailable: ' + e.message));

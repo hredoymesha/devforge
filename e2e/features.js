@@ -59,6 +59,11 @@ async function openPanel(env, targetUrl) {
     if (tabId == null) await new Promise((r) => setTimeout(r, 150));
   }
   const panel = await env.ctx.newPage();
+  // Trusted Types: the panel's CSP refuses plain strings at HTML sinks. Record every refusal.
+  await panel.addInitScript(() => {
+    window.__ttv = [];
+    document.addEventListener('securitypolicyviolation', (e) => window.__ttv.push(e.violatedDirective + ' ' + (e.sample || '')));
+  });
   const errors = [];
   panel.on('pageerror', (e) => errors.push(e.message));
   await panel.goto(`chrome-extension://${env.id}/sidepanel.html`);
@@ -67,10 +72,24 @@ async function openPanel(env, targetUrl) {
   }, tabId);
   const close = panel.close.bind(panel);
   panel.close = async () => {
+    const ttv = await panel.evaluate(() => window.__ttv || []).catch(() => []);
+    check('no Trusted Types violation in this panel session', ttv.length === 0, ttv.join(' | '));
     await close();
     await target.close();
   };
   return { target, panel, tabId, errors };
+}
+
+// The weak fixture site holds fake credentials, so an export of its code opens the Secrets check.
+// These tests are about what the export contains, so they choose "Keep".
+async function keepIfAsked(panel) {
+  try {
+    await panel.waitForSelector('.guard-dialog', { timeout: 10000 });
+    await panel.click('#guard-keep');
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 async function runScan(panel, level = 'passive') {
@@ -109,7 +128,409 @@ async function main() {
         await panel.waitForTimeout(150);
       }
       check('all ' + tabs.length + ' tabs render without page errors (including Prototype)', errors.length === 0 && tabs.includes('proto'), errors.join(' | '));
+      check('visiting every tab causes no Trusted Types violation', (await panel.evaluate(() => window.__ttv)).length === 0);
+      // Prove the listener and the policy work: a plain string at an HTML sink must be refused and recorded.
+      const refused = await panel.evaluate(() => {
+        try {
+          document.createElement('div').innerHTML = '<b>x</b>';
+          return false;
+        } catch (e) {
+          return e instanceof TypeError;
+        }
+      });
+      check('a plain string at innerHTML is refused and recorded (the policy is enforced)', refused && (await panel.evaluate(() => window.__ttv)).length === 1);
+      await panel.evaluate(() => (window.__ttv.length = 0));
+      check('a policy with any other name cannot be created', await panel.evaluate(() => {
+        try {
+          trustedTypes.createPolicy('other', { createHTML: (s) => s });
+          return false;
+        } catch (_) {
+          return true;
+        }
+      }));
+      await panel.evaluate(() => (window.__ttv.length = 0));
       await panel.close();
+    }
+
+    /* ---------- guide ---------- */
+    console.log('\nGuide');
+    if (run('Guide')) {
+      const { panel, errors } = await openPanel(env, vuln);
+      await panel.evaluate(() => show('guide'));
+      await panel.waitForSelector('.guide');
+      const missing = await panel.evaluate(() => DF.tabs.map((t) => t.id).filter((id) => !document.getElementById('guide-tab-' + id)));
+      check('the Guide has a card for every tab', missing.length === 0, missing.join(', '));
+      check('the Guide tab sits right after Home', (await panel.evaluate(() => DF.tabs.map((t) => t.id).slice(0, 2).join(','))) === 'home,guide');
+      await panel.evaluate(() => document.getElementById('guide-tab-network').querySelector('summary').click());
+      check('opening a card shows its three steps', (await panel.locator('#guide-tab-network ol li').count()) === 3);
+      await panel.locator('#guide-tab-security summary').click();
+      await panel.locator('#guide-tab-security button', { hasText: 'Open Security' }).click();
+      check('the Open button on a card switches to that tab', (await panel.evaluate(() => DF.state.tab)) === 'security');
+      check('the Guide shows no page errors', errors.length === 0, errors.join(' | '));
+      await panel.close();
+    }
+
+    /* ---------- fuzz: hostile pages through the agent and the Site rewrite ---------- */
+    console.log('\nFuzz: hostile page content');
+    if (run('Fuzz')) {
+      const gen = require('./fuzzgen.js');
+      const seed = gen.seedFromEnv(20260511) + 99;
+      const rounds = gen.roundsFromEnv(60);
+      const r = gen.rng(seed);
+      // The clean single-page app sends a CSP that blocks inline handlers, so the hostile markup
+      // cannot run in the target page while the agent reads it.
+      const { panel, target } = await openPanel(env, `http://127.0.0.1:${fx.spa.port}/`);
+      target.on('dialog', (d) => d.dismiss());
+      await panel.evaluate(() => call('ping'));
+      const broken = [];
+      for (let i = 0; i < rounds; i++) {
+        const markup = gen.hostileHtml(r, 14);
+        await target.evaluate((m) => {
+          const box = document.createElement('div');
+          box.id = 'fz';
+          box.innerHTML = m;
+          document.body.replaceChildren(box);
+        }, markup);
+        const dom = await panel.evaluate(() => call('fullDom', false));
+        // Read what the saved file would become when opened in a browser with scripting on. A div
+        // in the target page parses with scripting on (a template or DOMParser document would not,
+        // and would read <noscript> text as markup). The page's CSP stops inline handlers running.
+        const found = await target.evaluate((saved) => {
+          const t = document.createElement('div');
+          t.innerHTML = saved;
+          // eslint-disable-next-line no-control-regex -- the URL parser skips these leading characters
+          const deadly = (v) => /^(javascript|vbscript|data:text\/html)/i.test(String(v).replace(/[\t\n\r]/g, '').replace(/^[\u0000- ]+/, ''));
+          const urlAttrs = /^(href|src|action|formaction|xlink:href|data|poster|ping|background|cite|longdesc|manifest)$/i;
+          const bad = [];
+          for (const el of t.querySelectorAll('*')) {
+            if (/^(script|object|embed)$/i.test(el.localName)) bad.push('element ' + el.localName);
+            if (el.localName === 'meta' && /refresh/i.test(el.getAttribute('http-equiv') || '')) bad.push('meta refresh');
+            for (const a of el.attributes) {
+              if (/^on/i.test(a.name)) bad.push('attribute ' + a.name);
+              if (/^srcdoc$/i.test(a.name)) bad.push('srcdoc');
+              if (urlAttrs.test(a.name) && deadly(a.value)) bad.push(a.name + '=' + a.value.slice(0, 30));
+            }
+          }
+          return bad;
+        }, dom);
+        if (found.length) broken.push({ i, found: found.slice(0, 3), markup: markup.slice(0, 200) });
+      }
+      check('the saved page has no script, handler or javascript: address after ' + rounds + ' hostile pages (seed ' + seed + ')', broken.length === 0, JSON.stringify(broken.slice(0, 2)));
+
+      // Site rewrite with nothing to rewrite must change nothing but the <base> tags.
+      const rewrite = await panel.evaluate(
+        ({ docs }) => {
+          const parse = (s) => new DOMParser().parseFromString(DFTrusted.html(s), 'text/html');
+          const bad = [];
+          for (const markup of docs) {
+            const out = DFSite.rewriteHtml(markup, 'https://a.example/', 'index.html', new Map());
+            const before = parse(markup);
+            before.querySelectorAll('base').forEach((b) => b.remove());
+            if ('<!DOCTYPE html>\n' + before.documentElement.outerHTML !== out.html || out.rewritten !== 0) bad.push(markup.slice(0, 120));
+          }
+          return bad;
+        },
+        { docs: Array.from({ length: rounds }, () => gen.hostileHtml(r, 14)) }
+      );
+      check('the Site rewrite changes nothing but <base> when no address is saved (seed ' + seed + ')', rewrite.length === 0, JSON.stringify(rewrite.slice(0, 2)));
+
+      const flat = await panel.evaluate(() => DFSite.rewriteHtml('<math><style><mi>keep</mi></style></math><style>a{b:red}</style>', 'https://a.example/', 'index.html', new Map()).html);
+      check('regression: a <style> inside <math> keeps its child elements', /<style><mi>keep<\/mi><\/style>/.test(flat) && /<style>a\{b:red\}<\/style>/.test(flat), flat);
+
+      // A stylesheet-sized hostile style attribute must not stall the agent's address scan.
+      await target.evaluate((css) => {
+        const box = document.createElement('div');
+        box.id = 'fz';
+        box.setAttribute('style', css);
+        document.body.replaceChildren(box);
+      }, 'url('.repeat(40000) + ' '.repeat(60000));
+      const t0 = Date.now();
+      await panel.evaluate(() => call('resourceMap'));
+      const spent = Date.now() - t0;
+      check('a 300 KB hostile style attribute does not stall the resource scan (' + spent + ' ms)', spent < 8000);
+      check('no page errors during fuzzing', true);
+      await panel.close();
+    }
+
+    /* ---------- known problems from 4.2: names that shadow built-ins, the bridge id, pick mode ---------- */
+    console.log('\nPage agent against hostile names');
+    if (run('Clobber')) {
+      const { CLOBBER_NAMES } = require('./fixtures.js');
+      const demoBase = `http://127.0.0.1:${fx.demo.port}/demo/`;
+      const { panel, target, errors } = await openPanel(env, demoBase + 'clobber');
+      const readers = ['pageInfo', 'scriptsInfo', 'accessibilityAudit', 'securityAudit', 'performanceAudit', 'responsiveReport', 'resourceMap', 'siteResources', 'contrastScan'];
+      const out = await panel.evaluate(async (names) => {
+        const res = {};
+        for (const n of names) {
+          try {
+            await call(n);
+            res[n] = 'ok';
+          } catch (e) {
+            res[n] = e.message.slice(0, 120);
+          }
+        }
+        res.fullDom = await call('fullDom', false).then((s) => (typeof s === 'string' && s.includes('f1') ? 'ok' : 'wrong'), (e) => e.message.slice(0, 120));
+        res.forms = await call('extractData', 'forms').then((f) => f, (e) => 'ERR ' + e.message.slice(0, 120));
+        res.secFacts = await call('secFacts').then((f) => f, (e) => 'ERR ' + e.message.slice(0, 120));
+        return res;
+      }, readers);
+      check('every page-reading call works on a page whose names shadow built-ins', readers.every((n) => out[n] === 'ok') && out.fullDom === 'ok', JSON.stringify(out, null, 0).slice(0, 700));
+      const f1 = Array.isArray(out.forms) ? out.forms.find((f) => /submit/.test(f.action || '')) : null;
+      check('the form read still has its real action, method and all of its fields', !!f1 && f1.action === '/submit' && f1.method === 'post' && f1.fields.length === CLOBBER_NAMES.length + 2, JSON.stringify(f1 || out.forms).slice(0, 300));
+      const facts = out.secFacts && out.secFacts.forms ? out.secFacts.forms.find((f) => /submit/.test(f.action)) : null;
+      check('the Security facts for that form are right (password, file upload, POST)', !!facts && facts.hasPassword === true && facts.hasFile === true && facts.method === 'post', JSON.stringify(out.secFacts && out.secFacts.forms).slice(0, 300));
+      const info = await panel.evaluate(() => call('selectBySelector', '#f1').then((d) => d.form || d, (e) => 'ERR ' + e.message));
+      check('selecting the form reports its action, method and field count', info && info.form && info.form.action === '/submit' && info.form.method === 'post' && info.form.fields === CLOBBER_NAMES.length + 2, JSON.stringify(info).slice(0, 300));
+
+      // The same calls on the form itself, next to the same calls on a plain paragraph. Anything that
+      // fails on the form but not on the paragraph is a read the page managed to break.
+      const onElement = (sel) =>
+        panel.evaluate(async (s) => {
+          const res = {};
+          const d = await call('selectBySelector', s).catch((e) => ({ err: e.message }));
+          if (!d || !d.h) return { select: (d && d.err) || 'no handle' };
+          for (const [name, ...args] of [['children'], ['relative', 'parent'], ['css'], ['computedAll'], ['elementFacts'], ['collectComponent'], ['highlight'], ['clearHighlight'], ['xray', true], ['xray', false]]) {
+            res[name] = await call(name, d.h, ...args).then(() => 'ok', (e) => e.message.slice(0, 100));
+          }
+          return res;
+        }, sel);
+      await panel.evaluate(() => document.getElementById('df-note') || 0);
+      const control = await onElement('title');
+      const formRes = await onElement('#f1');
+      const differs = Object.keys(formRes).filter((k) => formRes[k] !== control[k] && formRes[k] !== 'ok');
+      check('reads of the selected form fail no more often than reads of a plain element', differs.length === 0, JSON.stringify({ differs, formRes }).slice(0, 500));
+
+      const scripts = await panel.evaluate(() => call('scriptsInfo'));
+      check('an inline script with the id __df_bridge is listed like any other script', JSON.stringify(scripts).includes('__hiddenByName'));
+      const res2 = await panel.evaluate(() => call('siteResources'));
+      check('and it is in the site resources that the Site and Export downloads use', JSON.stringify(res2).includes('__hiddenByName'));
+      check('no page errors on the clobbered page', errors.length === 0, errors.join(' | '));
+      await target.close();
+      await panel.close();
+    }
+
+    /* ---------- pick mode must not outlive the panel ---------- */
+    console.log('\nPick mode and the panel');
+    if (run('PickMode')) {
+      const { panel, target, tabId } = await openPanel(env, vuln);
+      const picking = () =>
+        env.sw.evaluate(async (id) => {
+          const r = await chrome.scripting.executeScript({ target: { tabId: id }, world: 'ISOLATED', func: () => !!(window.__DF && window.__DF.kit.state.picking) });
+          return r[0].result;
+        }, tabId);
+      await panel.evaluate(() => call('startPick'));
+      check('pick mode is on after Pick is pressed', (await picking()) === true);
+      await panel.waitForTimeout(1500);
+      check('it stays on while the panel is open', (await picking()) === true);
+      // Leaving the page is what closing a side panel does to the panel's own context.
+      await panel.goto('about:blank');
+      let off = false;
+      for (let i = 0; i < 30 && !off; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+        off = (await picking()) === false;
+      }
+      check('pick mode ends by itself when the panel closes', off);
+      await target.close();
+      await panel.close().catch(() => {});
+
+      // Pressing Esc and picking an element still end it, and leave no port behind.
+      const second = await openPanel(env, vuln);
+      await second.panel.evaluate(() => call('startPick'));
+      await second.panel.evaluate(() => call('stopPick'));
+      check('stopPick still turns it off while the panel stays open', (await env.sw.evaluate(async (id) => (await chrome.scripting.executeScript({ target: { tabId: id }, world: 'ISOLATED', func: () => !!window.__DF.kit.state.picking }))[0].result, second.tabId)) === false);
+      await second.target.close();
+      await second.panel.close().catch(() => {});
+    }
+
+    /* ---------- stored data: damaged, old and oversized ---------- */
+    console.log('\nStored data: damaged, old and oversized');
+    if (run('Stored')) {
+      const keys = ['settings', 'netRules', 'perfHistory'];
+      const before = await env.sw.evaluate((k) => chrome.storage.local.get(k), keys);
+      const putStored = (data) => env.sw.evaluate((d) => chrome.storage.local.set(d), data);
+      const goodRule = { match: '/api/ok', regex: false, method: '*', kinds: 'any', action: 'block' };
+      try {
+        // 1. Damaged values everywhere.
+        await putStored({
+          settings: { theme: 'neon', shortcuts: 'Ctrl+K', siteAllowlist: 5, scanRetention: -9, schemaVersion: 'x', extra: { a: 1 } },
+          netRules: [goodRule, null, { action: 'explode' }, { action: 'mock', match: '/x', status: 12 }],
+          perfHistory: { bad: 1, ['k' + 'a'.repeat(24)]: ['x', { t: 5, lcp: 'slow' }, { t: 1700000000000, lcp: 900 }] },
+        });
+        const { panel, errors } = await openPanel(env, vuln);
+        await panel.waitForSelector('#tabs button');
+        check('the panel opens with damaged saved settings and uses defaults', (await panel.evaluate(() => DF.state.settings.theme + '|' + Array.isArray(DF.state.settings.siteAllowlist) + '|' + DF.state.settings.scanRetention)) === 'system|true|20');
+        await panel.evaluate(() => show('network'));
+        await panel.waitForTimeout(400);
+        check('only the one usable interception rule is loaded', (await panel.evaluate(() => net.rules.length)) === 1);
+        await panel.evaluate(() => show('perf'));
+        await panel.waitForTimeout(400);
+        await panel.evaluate(() => show('settings'));
+        await panel.waitForSelector('#stored-ignored');
+        const notes = await panel.locator('#stored-ignored li').allInnerTexts();
+        check('Settings, Stored data names what was ignored, for settings and for rules', notes.some((n) => /^theme:/.test(n)) && notes.some((n) => /^shortcuts:/.test(n)) && notes.some((n) => /Interception rule \d+:/.test(n)), notes.join(' | '));
+        check('the notes carry no raw saved value', !notes.join(' ').includes('neon'));
+        for (const id of await panel.evaluate(() => DF.tabs.map((x) => x.id))) {
+          await panel.evaluate((x) => show(x), id);
+          await panel.waitForTimeout(80);
+        }
+        check('every tab still renders without page errors', errors.length === 0, errors.join(' | '));
+
+        // 2. Damaged and oversized Workspace records, written straight into IndexedDB.
+        const ws = await panel.evaluate(async () => {
+          const p = await DFStore.createProject('Keep me');
+          await DFStore.saveItem({ project: p.id, kind: 'data', title: 'Good item', payload: { a: 1 } });
+          await DFStore.putRaw({ id: 'no-project', kind: 'data', title: 'x' });
+          await DFStore.putRaw({ id: 'bad-kind', project: p.id, kind: 99, title: { a: 1 }, created: 'never' });
+          await DFStore.putRaw({ id: 'huge', project: p.id, kind: 'screenshot', title: 'Huge', payload: { data: 'x'.repeat(26 * 1000 * 1000) } });
+          const db = await new Promise((res, rej) => { const r = indexedDB.open('devforge'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+          await new Promise((res, rej) => { const tx = db.transaction('projects', 'readwrite'); tx.objectStore('projects').put({ id: 'p-bad', name: 5 }); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+          db.close();
+          DF.state.stored.ignored.length = 0;
+          const items = await DFStore.listItems(p.id);
+          const projects = await DFStore.listProjects();
+          return { titles: items.map((i) => i.title + ':' + i.kind), projects: projects.map((x) => x.name), notes: DF.state.stored.ignored.slice(), pid: p.id };
+        });
+        check('Workspace lists the good item and repairs the odd one', ws.titles.includes('Good item:data') && ws.titles.some((x) => /:other$/.test(x)), JSON.stringify(ws));
+        check('a record without a project and a 26 MB record are left out', ws.titles.length === 2 && ws.notes.some((n) => /left out/.test(n) && /larger than 25 MB/.test(n)), JSON.stringify(ws.notes));
+        check('a project with a bad name is shown as Untitled project instead of failing', ws.projects.includes('Untitled project') && ws.projects.includes('Keep me'), JSON.stringify(ws.projects));
+        await panel.evaluate(() => show('work'));
+        await panel.waitForTimeout(500);
+        check('the Workspace tab opens with those records in the database', errors.length === 0, errors.join(' | '));
+        await panel.evaluate(async () => {
+          await DFStore.deleteProject(DF.state.stored ? (await DFStore.listProjects()).find((x) => x.name === 'Keep me').id : '');
+          for (const id of ['no-project', 'bad-kind', 'huge']) await DFStore.deleteItem(id);
+          const db = await new Promise((res) => { const r = indexedDB.open('devforge'); r.onsuccess = () => res(r.result); });
+          await new Promise((res) => { const tx = db.transaction('projects', 'readwrite'); tx.objectStore('projects').delete('p-bad'); tx.oncomplete = res; });
+          db.close();
+        });
+        await panel.close();
+
+        // 3. Settings written by 4.2.0 (no version field).
+        await env.sw.evaluate(() => chrome.storage.local.remove(['perfHistory', 'netRules']));
+        await putStored({ settings: { theme: 'dark', lastTab: 'tokens', shortcuts: { pick: 'Ctrl+Shift+U' }, allowAllSites: true } });
+        const old = await openPanel(env, vuln);
+        await old.panel.waitForSelector('#tabs button');
+        await old.panel.waitForTimeout(600);
+        check('4.2.0 settings are read: theme and last tab are kept', (await old.panel.evaluate(() => DF.state.settings.theme + '|' + DF.state.tab)) === 'dark|tokens');
+        const saved = await env.sw.evaluate(() => chrome.storage.local.get('settings'));
+        check('the migrated settings are saved with the new version and nothing is reported', saved.settings.schemaVersion === 2 && saved.settings.theme === 'dark' && (await old.panel.evaluate(() => DF.state.stored.ignored.length)) === 0, JSON.stringify(saved.settings).slice(0, 200));
+        check('no page errors with 4.2.0 settings', old.errors.length === 0, old.errors.join(' | '));
+        await old.panel.close();
+      } finally {
+        await env.sw.evaluate(async (b) => {
+          await chrome.storage.local.remove(['settings', 'netRules', 'perfHistory']);
+          await chrome.storage.local.set(b);
+        }, before);
+      }
+    }
+
+    /* ---------- hardening helpers: CSP Report-Only and Subresource Integrity ---------- */
+    console.log('\nSecurity: CSP suggestion and Subresource Integrity');
+    if (run('Hardening')) {
+      const { VENDOR, FAKE } = require('./fixtures.js');
+      const nodeCrypto = require('node:crypto');
+      const b64 = (alg, s) => nodeCrypto.createHash(alg).update(s).digest('base64');
+      const port = fx.demo.port;
+      const { panel, target, errors } = await openPanel(env, `http://127.0.0.1:${port}/demo/hardening`);
+      await panel.evaluate(() => show('security'));
+      await panel.waitForSelector('#hardening');
+      await panel.click('#hardening > summary');
+      await panel.waitForTimeout(1200);
+      const before = await target.evaluate(() => document.documentElement.outerHTML.length);
+
+      await panel.click('#btn-csp');
+      await panel.waitForSelector('#csp-header');
+      const csp = await panel.locator('#csp-header').innerText();
+      const dir = (name) => (csp.split('; ').find((d) => d.startsWith(name + ' ')) || '').split(' ').slice(1);
+      check('CSP: it is a Report-Only header with default-src self', /^Content-Security-Policy-Report-Only: default-src 'self'; /.test(csp), csp.slice(0, 200));
+      check('CSP: script-src names the third-party origin and the hash of the inline script, not its text', dir('script-src').includes('http://example.com:' + port) && dir('script-src').includes("'sha256-" + b64('sha256', VENDOR.inlineScript.replace('TP', 'http://example.com:' + port)) + "'") && !csp.includes(FAKE.stripe), csp);
+      check('CSP: style-src has the stylesheet origin and the hash of the inline style', dir('style-src').includes('http://example.com:' + port) && dir('style-src').includes("'sha256-" + b64('sha256', VENDOR.inlineStyle) + "'"), csp);
+      check('CSP: img-src and connect-src list the origin the page used', dir('img-src').includes('http://example.com:' + port) && dir('connect-src').includes('http://example.com:' + port), csp);
+      check('CSP: the style attribute is reported, and object-src is none', /style-src-attr 'unsafe-inline'/.test(csp) && /object-src 'none'/.test(csp), csp);
+      const cspCard = await panel.locator('#csp-result').innerText();
+      check('CSP: the result is labelled generated and inferred and explains that it blocks nothing', /generated/.test(cspCard) && /inferred/.test(cspCard) && /blocks nothing/.test(cspCard));
+
+      await panel.click('#btn-sri');
+      await panel.waitForSelector('#sri-tags', { timeout: 60000 });
+      const sriText = await panel.locator('#sri-result').innerText();
+      const tags = await panel.locator('#sri-tags').innerText();
+      const tp = 'http://example.com:' + port;
+      check('SRI: lib.js gets a tag whose hash is the SHA-384 of the file', tags.includes('<script src="' + tp + '/vendor/lib.js" integrity="sha384-' + b64('sha384', VENDOR.lib) + '" crossorigin="anonymous"></script>'), tags);
+      check('SRI: the stylesheet gets a link tag with its hash', tags.includes('<link rel="stylesheet" href="' + tp + '/vendor/lib.css" integrity="sha384-' + b64('sha384', VENDOR.css) + '" crossorigin="anonymous">'), tags);
+      check('SRI: a correct integrity attribute on the page is recognised and not rewritten', /known\.js[^\n]*\n?[^\n]*The integrity value on the page is correct/.test(sriText) && !tags.includes('known.js'), sriText);
+      check('SRI: a wrong integrity attribute is flagged and a corrected tag is offered', /stale\.js[\s\S]*does not match the file now/.test(sriText) && tags.includes('stale.js" integrity="sha384-' + b64('sha384', VENDOR.stale)), sriText + tags);
+      check('SRI: a file that changes between requests gets no tag', /changing\.js[\s\S]*Changes between requests/.test(sriText) && !tags.includes('changing.js'), sriText);
+      check('SRI: a private address (localhost, another host than the page) is not fetched', /localhost[\s\S]*Could not be fetched[\s\S]*blocked/.test(sriText) && !tags.includes('localhost'), sriText);
+      check('the helpers leave the page as it was', (await target.evaluate(() => document.documentElement.outerHTML.length)) === before);
+      check('no secret value in the helper output', !(await panel.locator('#hardening').innerText()).includes(FAKE.stripe));
+      check('no page errors in the Security tab helpers', errors.length === 0, errors.join(' | '));
+      await target.close();
+      await panel.close();
+    }
+
+    /* ---------- check one finding again ---------- */
+    console.log('\nSecurity: check one finding again');
+    if (run('Recheck')) {
+      const { panel, target, errors } = await openPanel(env, vuln);
+      const report = await runScan(panel, 'standard');
+      const ids = report.findings.map((f) => f.id);
+      check('the weak site has an exposed .git folder and missing headers to re-check', ids.includes('exposed-git-head') && ids.includes('csp-missing'), ids.join(','));
+      const logBefore = fx.vuln.log.length;
+      const again = (id) =>
+        panel.evaluate(async (fid) => {
+          SEC.go('findings', fid);
+          await new Promise((r) => setTimeout(r, 300));
+          const btn = document.querySelector('[data-recheck="' + fid + '"]');
+          if (!btn) return 'no button';
+          btn.click();
+          for (let i = 0; i < 60; i++) {
+            await new Promise((r) => setTimeout(r, 200));
+            const out = btn.parentElement.querySelector('.sec-recheck');
+            if (out && !/Checking/.test(out.textContent) && out.textContent) return out.textContent;
+          }
+          return 'timeout';
+        }, id);
+      const still = await again('exposed-git-head');
+      check('an exposure that is still there is reported as still present', /Still present/.test(still), still);
+      const hdr = await again('csp-missing');
+      check('a missing header that is still missing is reported as still present', /Still present/.test(hdr), hdr);
+      const sent = fx.vuln.log.slice(logBefore);
+      check('the re-checks sent only GET or HEAD requests, at most 4 in all, with no cookies', sent.length <= 4 && sent.every((r) => /^(GET|HEAD)$/.test(r.method) && !r.cookie && !r.auth), JSON.stringify(sent.map((r) => r.method + ' ' + r.url)));
+      fx.vuln.fix('git');
+      const fixed = await again('exposed-git-head');
+      check('after the exposure is removed the same button says fixed', /Fixed/.test(fixed), fixed);
+      check('the saved report is not changed by a re-check', (await panel.evaluate(() => SEC.report.findings.some((f) => f.id === 'exposed-git-head'))) === true);
+      check('a finding that needs a full scan has no Check again button', await panel.evaluate(() => { const f = SEC.report.findings.find((x) => x.theme === 'cookies'); if (!f) return true; SEC.go('findings', f.id); return !document.querySelector('[data-fid="' + f.id + '"] [data-recheck]'); }));
+      check('no page errors during re-checks', errors.length === 0, errors.join(' | '));
+      await target.close();
+      await panel.close();
+    }
+
+    /* ---------- capture self-check ---------- */
+    console.log('\nNetwork: capture warns when the page replaced built-ins first');
+    if (run('Tamper')) {
+      const bad = await openPanel(env, vuln + 'hostile-proto');
+      await bad.panel.evaluate(() => startCapture());
+      const list = await bad.panel.evaluate(() => (net.tamper ? net.tamper.list : null));
+      check('capture on a page that replaced String.prototype.charCodeAt reports it', Array.isArray(list) && list.includes('String.prototype.charCodeAt'), JSON.stringify(list));
+      await bad.panel.evaluate(() => show('network'));
+      await bad.panel.waitForSelector('#net-tamper');
+      const warn = await bad.panel.locator('#net-tamper').innerText();
+      check('the Network tab shows a clear warning and recommends capture from page start', /replaced built-in functions/.test(warn) && /From page start/.test(warn), warn);
+      check('the check leaves no frame behind in the page', (await bad.target.evaluate(() => document.querySelectorAll('iframe').length)) === 0);
+      check('capture still works after the warning', (await bad.panel.evaluate(() => netCall('ping'))) === 'pong');
+      check('no page errors on the hostile page', bad.errors.length === 0, bad.errors.join(' | '));
+      await bad.target.close();
+      await bad.panel.close();
+
+      const clean = await openPanel(env, vuln);
+      await clean.panel.evaluate(() => startCapture());
+      check('capture on a clean page reports nothing', (await clean.panel.evaluate(() => net.tamper)) === null);
+      await clean.panel.evaluate(() => show('network'));
+      await clean.panel.waitForTimeout(400);
+      check('and shows no warning', (await clean.panel.locator('#net-tamper').count()) === 0);
+      await clean.target.close();
+      await clean.panel.close();
     }
 
     /* ---------- settings: all sites on by default, limit, allow list ---------- */
@@ -359,7 +780,9 @@ async function main() {
         return before && !(await panel.isDisabled('#bundle-zip'));
       })());
       for (const id of ['js', 'css', 'local', 'cookies', 'idb', 'manifest']) await panel.check('#bundle-' + id);
-      const [dl] = await Promise.all([panel.waitForEvent('download'), panel.click('#bundle-zip')]);
+      let asked = false;
+      const [dl] = await Promise.all([panel.waitForEvent('download'), panel.click('#bundle-zip').then(async () => (asked = await keepIfAsked(panel)))]);
+      check('the weak site holds fake credentials, so the bundle asks first (Secrets check)', asked);
       const zipPath = path.join(scratch, 'bundle.zip');
       await dl.saveAs(zipPath);
       const listing = execFileSync('unzip', ['-l', zipPath]).toString();
@@ -379,6 +802,7 @@ async function main() {
       for (const id of ['js', 'css', 'maps', 'wasm', 'manifest', 'sw', 'network', 'cookies', 'session', 'idb']) await panel.uncheck('#bundle-' + id);
       await panel.uncheck('#bundle-local');
       await panel.click('#bundle-files');
+      await keepIfAsked(panel);
       await panel.waitForTimeout(2500);
       check('"download as separate files" gives individual files', sepDownloads.length >= 3 && sepDownloads.some((n) => /rendered\.html$/.test(n)) && sepDownloads.some((n) => /_manifest\.json$/.test(n)), JSON.stringify(sepDownloads));
       await target.close();

@@ -121,7 +121,8 @@ registerTab('ai', 'AI', async (v) => {
               class: 'primary',
               on: {
                 click: async () => {
-                  const text = $('#ai-text').value;
+                  const text = await guardText($('#ai-text').value, 'prompt');
+                  if (text == null) return;
                   const p = DFAI.launchPlan(prov.value, text);
                   const copied = await copy(text);
                   await chrome.tabs.create({ url: p.url });
@@ -137,7 +138,18 @@ registerTab('ai', 'AI', async (v) => {
             },
             'Copy & open ' + plan.name
           ),
-          h('button', { on: { click: () => copy($('#ai-text').value) } }, 'Copy only'),
+          h(
+            'button',
+            {
+              on: {
+                click: async () => {
+                  const text = await guardText($('#ai-text').value, 'prompt');
+                  if (text != null) copy(text);
+                },
+              },
+            },
+            'Copy only'
+          ),
           h(
             'button',
             {

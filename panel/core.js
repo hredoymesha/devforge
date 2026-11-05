@@ -8,6 +8,8 @@ const DF = {
     h: null,
     info: null,
     project: null,
+    // Notes about saved data that was not valid and was ignored (lib/stored.js). Shown in Settings.
+    stored: { ignored: [] },
     settings: {
       theme: 'system',
       shortcuts: {},
@@ -43,7 +45,19 @@ const AGENT_FILES = [
   'agent/prototype.js',
 ];
 // Bump whenever the agent API changes so pages holding an older copy get a fresh one.
-const AGENT_VERSION = 12;
+const AGENT_VERSION = 13;
+
+// Records what lib/stored.js left out of the saved data and tells the user once per new note.
+function noteIgnored(list) {
+  let added = 0;
+  for (const text of list || []) {
+    if (!DF.state.stored.ignored.includes(text)) {
+      DF.state.stored.ignored.push(text);
+      added++;
+    }
+  }
+  if (added) toast('Some saved data was not valid and was ignored. Details: Settings, Stored data.', 6000);
+}
 
 /* Errors from UI handlers end up here instead of as unhandled rejections in the console. */
 function showError(err) {

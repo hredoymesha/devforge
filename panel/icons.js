@@ -3,6 +3,7 @@
 // the label or the button's aria-label carries the meaning.
 const DF_ICON_PATHS = {
   home: ['M3 11l9-8 9 8', 'M5 10v10h5v-6h4v6h5V10'],
+  guide: ['M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z', 'M4 19V5', 'M9 8h6', 'M9 12h6'],
   inspect: ['M12 3v4', 'M12 17v4', 'M3 12h4', 'M17 12h4', 'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z'],
   css: ['M8 4c-2 0-2 1-2 3v2c0 1.5-1 2.500-2 3 1 .5 2 1.500 2 3v2c0 2 0 3 2 3', 'M16 4c2 0 2 1 2 3v2c0 1.500 1 2.500 2 3-1 .5-2 1.500-2 3v2c0 2 0 3-2 3'],
   network: ['M7 20V5', 'M3 9l4-4 4 4', 'M17 4v15', 'M13 15l4 4 4-4'],

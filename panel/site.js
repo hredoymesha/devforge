@@ -657,7 +657,12 @@ registerTab('site', 'Site', async (v) => {
                   },
                 };
                 const res = await runSiteDownload(O, ui);
-                const zip = DFZip.build(res.files);
+                const safe = await guardFiles(res.files);
+                if (!safe) {
+                  clear(prog);
+                  return;
+                }
+                const zip = await DFZip.buildAsync(safe);
                 download(
                   'site-' + slug(siteS.scan.host) + '-' + stamp() + '.zip',
                   zip,

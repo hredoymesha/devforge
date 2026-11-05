@@ -170,10 +170,10 @@ registerTab('play', 'Playground', async (v) => {
           'button',
           {
             on: {
-              click: () =>
+              click: async () =>
                 download(
                   'playground-' + stamp() + '.zip',
-                  DFZip.build([
+                  await DFZip.buildAsync([
                     {
                       path: 'index.html',
                       data: `<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css"></head><body>\n${pg.html}\n<script src="script.js"></script></body></html>`,

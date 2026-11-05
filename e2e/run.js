@@ -70,8 +70,15 @@ async function openPanel(env, targetUrl) {
   // Newest matching tab: earlier tests may have left pages open on the same origin.
   const tabId = await env.sw.evaluate(async (p) => (await chrome.tabs.query({ url: p })).sort((a, b) => b.id - a.id)[0].id, pattern);
   const panel = await env.ctx.newPage();
+  // Trusted Types: the panel's CSP refuses plain strings at HTML sinks. Record every refusal.
+  await panel.addInitScript(() => {
+    window.__ttv = [];
+    document.addEventListener('securitypolicyviolation', (e) => window.__ttv.push(e.violatedDirective + ' ' + (e.sample || '')));
+  });
   const closePanel = panel.close.bind(panel);
   panel.close = async () => {
+    const ttv = await panel.evaluate(() => window.__ttv || []).catch(() => []);
+    check('no Trusted Types violation in this panel session', ttv.length === 0, ttv.join(' | '));
     await closePanel();
     await target.close();
   };

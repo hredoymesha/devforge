@@ -304,3 +304,54 @@ async function secRunScan(opts) {
   }
   return { report, cancelled, technical };
 }
+
+/*
+ * Runs again only the check behind one finding. It goes through the same gate as a scan (same origin,
+ * GET or HEAD, no cookies, a budget of three requests, a pause between requests), needs the same
+ * ownership confirmation on a public site, and stays on the tab and site it was started for.
+ * Resolves to { state: 'fixed' | 'still-present' | 'could-not-check', note }.
+ */
+async function secRecheck(finding, report, target) {
+  const plan = DFRecheck.plan(finding);
+  if (!plan) return { state: 'could-not-check', note: 'This kind of finding can only be checked again by a new scan.' };
+  let reportOrigin = '';
+  try {
+    reportOrigin = new URL(report.target).origin;
+  } catch (_) {
+    /* no address in the report */
+  }
+  if (!reportOrigin || reportOrigin !== target.origin) return { state: 'could-not-check', note: 'The open tab is not on the site this report is about.' };
+  if (target.kind === 'public' && !(await secAckLevel(target.origin))) return { state: 'could-not-check', note: 'Confirm that you own this site or have permission to test it in the scan setup first.' };
+  const tabId = DF.state.tabId;
+  const sameTab = () => DF.state.tabId === tabId && DF.state.url && new URL(DF.state.url).origin === target.origin;
+  const begin = await call('secBegin', { maxRequests: 3, delayMs: 0 });
+  const ask = async (spec) => {
+    if (!sameTab()) throw new Error('The active tab or page changed, so the check stopped.');
+    const r = await call('secRequest', { id: begin.id, ...spec });
+    await sleep(250);
+    return r;
+  };
+  try {
+    let fresh;
+    if (plan.kind === 'probe') {
+      const b = await ask({ method: 'GET', path: '/__devforge_probe_' + Math.random().toString(36).slice(2, 10), maxBytes: 8192, purpose: 'baseline for a missing path' });
+      const p = await ask({ method: 'GET', path: plan.path, maxBytes: 8192, purpose: plan.probe });
+      if (!b.ok || !p.ok) return { state: 'could-not-check', note: (!p.ok ? p.error || p.blocked : b.error || b.blocked) || 'no answer' };
+      const baseline = DFSecProbe.baselineOf({ status: b.status, type: b.type, text: b.text || '' });
+      fresh = DFSecScan.analyzeProbes([{ probe: plan.probe, path: plan.path, res: { status: p.status, type: p.type, text: p.text || '', redirected: p.redirected, wwwAuthenticate: p.wwwAuthenticate } }], baseline);
+    } else {
+      const here = new URL(DF.state.url);
+      const spec = { path: here.pathname + here.search, allowQuery: true, follow: true, headers: await call('secHeaderNames'), purpose: 'page response headers' };
+      let r = await ask({ ...spec, method: 'HEAD' });
+      if (!(r.ok && r.status >= 200 && r.status < 400)) r = await ask({ ...spec, method: 'GET', maxBytes: 0 });
+      if (!(r.ok && r.headers)) return { state: 'could-not-check', note: r.error || r.blocked || 'no answer' };
+      const facts = await call('secFacts');
+      fresh = DFSecScan.analyzeHeaders(r.headers, { https: here.protocol === 'https:', hasPasswordForm: (facts.forms || []).some((f) => f.hasPassword), resource: finding.resource });
+    }
+    return { state: DFRecheck.decide(finding, fresh), note: '' };
+  } catch (e) {
+    return { state: 'could-not-check', note: e.message };
+  } finally {
+    await call('secEnd').catch(() => {});
+  }
+}

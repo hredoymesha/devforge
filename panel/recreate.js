@@ -190,7 +190,7 @@ function renderRecreate(out, S) {
       h('iframe', {
         class: 'preview',
         sandbox: '',
-        srcdoc: b.doc,
+        srcdoc: DFTrusted.html(b.doc),
         title: 'Recreated preview (scripts and navigation disabled)',
       })
     )
@@ -215,13 +215,13 @@ function renderRecreate(out, S) {
           {
             class: 'primary',
             on: {
-              click: () => {
+              click: async () => {
                 const target = $('#re-target') ? $('#re-target').value : S.target;
                 const g = DFGen.generate(b.rec, target, S.name);
                 const rep = reportMd(S, g);
                 download(
                   'recreation-' + S.name + '-' + stamp() + '.zip',
-                  DFZip.build([
+                  await DFZip.buildAsync([
                     ...g.files.map((f) => ({ path: S.name + '/' + f.path, data: f.data })),
                     { path: S.name + '/preview.html', data: b.doc.replace(' data-df-root', '') },
                     { path: S.name + '/RECREATION-REPORT.md', data: rep },

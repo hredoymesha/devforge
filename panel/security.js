@@ -796,8 +796,22 @@ function secFindingCard(f, report, sel = {}) {
     f.details ? h('details', null, h('summary', null, 'Technical details'), codeBlock(f.details)) : '',
     rel.length ? h('div', { class: 'sec-related' }, h('b', null, 'Related findings: '), rel.map((r) => [h('button', { class: 'link', on: { click: () => SEC.go('findings', r.id) } }, r.title), ' '])) : '',
     f.refs && f.refs.some((u) => /^https:\/\//.test(u)) ? h('div', { class: 'sev-info' }, 'Learn more: ', f.refs.filter((u) => /^https:\/\//.test(u)).map((url, i) => [i ? ' · ' : '', h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, new URL(url).hostname)])) : '',
-    h('div', { class: 'row' }, secCopyButton(DFSecReport.findingBlock(f, '##'), 'Copy finding'))
+    h('div', { class: 'row' }, secCopyButton(DFSecReport.findingBlock(f, '##'), 'Copy finding'), secRecheckButton(f, report))
   );
+}
+
+// "Check again" for the findings whose check can be re-run alone (an exposed path, the response headers).
+function secRecheckButton(f, report) {
+  if (!DFRecheck.plan(f)) return '';
+  const out = h('div', { class: 'sec-recheck', role: 'status' });
+  const btn = h('button', { class: 'sec-mini', 'data-recheck': f.id, on: { click: guard(async () => {
+    btn.disabled = true;
+    clear(out).append('Checking…');
+    const r = await secRecheck(f, report, SEC.target);
+    btn.disabled = false;
+    clear(out).append(h('b', { class: r.state === 'fixed' ? 'sev-ok' : r.state === 'still-present' ? 'sev-warn' : 'sev-info' }, DFRecheck.TEXT[r.state]), r.note ? ' ' + r.note : '', h('div', { class: 'sev-info' }, DFRecheck.NOTE));
+  }) } }, icon('retry', 12), ' Check again');
+  return h('div', null, btn, out);
 }
 const secField = (label, text) => h('p', null, h('b', null, label + '. '), text);
 
@@ -964,6 +978,7 @@ registerTab('security', 'Security', async (v) => {
   }
   SEC.target = target;
   v.append(body);
+  v.append(secHardeningCard());
   // A report belongs to the site it was made for. After moving to another site, start from the
   // setup screen instead of showing results that look like they describe the new page.
   if (SEC.view === 'results' && SEC.report && !SEC.pinned) {

@@ -12,7 +12,7 @@
 (() => {
   const DF = window.__DF;
   if (!DF || DF.protoApply) return;
-  const { target, clip, onDestroy } = DF.kit;
+  const { target, clip, onDestroy, dom } = DF.kit;
 
   const st = { sheet: null, style: null, on: true, css: '', method: null };
 
@@ -78,7 +78,7 @@
 
   function protoClear() {
     if (st.sheet) document.adoptedStyleSheets = document.adoptedStyleSheets.filter((s) => s !== st.sheet);
-    if (st.style) st.style.remove();
+    if (st.style) dom.remove(st.style);
     st.sheet = st.style = null;
     st.css = '';
     st.method = null;
@@ -119,7 +119,7 @@
       return { name: n, value: clip(value, 80), isColor: !!value && CSS.supports('color', value) };
     });
 
-    const sample = [...document.querySelectorAll('[class]')].slice(0, 400).map((e) => String(e.getAttribute('class')));
+    const sample = [...document.querySelectorAll('[class]')].slice(0, 400).map((e) => String(dom.getAttribute(e, 'class')));
     const frameworks = FRAMEWORKS.filter(([, re]) => sample.filter((c) => re.test(c)).length >= 8).map(([n]) => n);
 
     const out = {
@@ -134,11 +134,11 @@
     };
     if (!el) return out;
     const cs = getComputedStyle(el);
-    const p = el.parentElement;
+    const p = dom.parentElement(el);
     const pcs = p ? getComputedStyle(p) : null;
     const display = cs.display;
     const pDisplay = pcs ? pcs.display : '';
-    const textual = [...el.childNodes].some((n) => n.nodeType === 3 && n.nodeValue.trim());
+    const textual = [...dom.childNodes(el)].some((n) => dom.nodeType(n) === 3 && n.nodeValue.trim());
     const layout = {
       display,
       position: cs.position,
@@ -150,7 +150,7 @@
       parentDirection: pcs ? pcs.flexDirection : '',
       parentGap: pcs ? pcs.gap : '',
       textual,
-      children: el.children.length,
+      children: dom.children(el).length,
     };
     const props = ['color', 'backgroundColor', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'textAlign', 'fontFamily', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft', 'borderTopLeftRadius', 'borderTopWidth', 'borderTopStyle', 'borderTopColor', 'opacity', 'boxShadow', 'width', 'height', 'maxWidth', 'display', 'gap', 'flexDirection', 'justifyContent', 'alignItems', 'flexWrap', 'gridTemplateColumns', 'flexGrow', 'flexShrink', 'alignSelf', 'order', 'gridColumn', 'gridRow', 'overflow', 'zIndex'];
     const current = {};
@@ -162,7 +162,7 @@
     if (layout.isGridContainer) groups.push('grid-container');
     if (layout.inFlex) groups.push('flex-item');
     if (layout.inGrid) groups.push('grid-item');
-    out.element = { layout, current, groups, text: textual ? clip((el.textContent || '').trim(), 200) : '' };
+    out.element = { layout, current, groups, text: textual ? clip((dom.textContent(el) || '').trim(), 200) : '' };
     return out;
   }
 

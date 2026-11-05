@@ -6,11 +6,12 @@
 (() => {
   if (window.__DF && window.__DF.version) return;
 
-  const AGENT_VERSION = 12; // must match AGENT_VERSION in panel/core.js
+  const AGENT_VERSION = 13; // must match AGENT_VERSION in panel/core.js
   const MAX_NODES = 20000;
   const state = {
     selected: null,
     picking: false,
+    pickPort: null, // open while picking; the panel closing drops it
     overlay: null,
     hoverBox: null,
     boxed: null, // {el, label} currently outlined by the overlay box
@@ -22,7 +23,7 @@
   };
 
   // helpers
-  const isEl = (n) => n && n.nodeType === 1;
+  const isEl = (n) => n && dom.nodeType(n) === 1;
   const lc = (s) => (s || '').toLowerCase();
   const clip = (s, n = 400) =>
     s == null ? '' : String(s).length > n ? String(s).slice(0, n) + '…' : String(s);
@@ -34,6 +35,44 @@
     }
   };
   const prov = (value, provenance, extra) => ({ value, provenance, ...(extra || {}) });
+
+  // A form answers to the names of its controls before its own properties. A page can name an input
+  // "getAttribute", "tagName" or "parentElement" and form.getAttribute then returns that input, which
+  // makes a read throw, or a loop that walks parentElement go round forever (DOM clobbering). Every
+  // read of an element in the agent goes through `dom`. It finds the property or method on the
+  // element's prototype chain, which the page cannot shadow, and calls it on the element. A value
+  // that is not an element is read the ordinary way. eslint (no-restricted-properties) keeps new code
+  // from calling these directly.
+  const dom = (() => {
+    const find = (el, name) => {
+      for (let p = Object.getPrototypeOf(el); p; p = Object.getPrototypeOf(p)) {
+        const d = Object.getOwnPropertyDescriptor(p, name);
+        if (d) return d;
+      }
+      return null;
+    };
+    const out = {};
+    for (const name of ['tagName', 'attributes', 'children', 'parentElement', 'parentNode', 'childNodes', 'firstChild', 'lastChild', 'nextSibling', 'previousSibling', 'firstElementChild', 'lastElementChild', 'nextElementSibling', 'previousElementSibling', 'textContent', 'classList', 'localName', 'nodeName', 'nodeType', 'shadowRoot']) {
+      out[name] = (el) => {
+        const d = el instanceof Element ? find(el, name) : null;
+        return d && d.get ? d.get.call(el) : el[name];
+      };
+    }
+    for (const name of ['getAttribute', 'hasAttribute', 'setAttribute', 'removeAttribute', 'getAttributeNames', 'querySelector', 'querySelectorAll', 'matches', 'closest', 'getBoundingClientRect', 'cloneNode', 'contains', 'getRootNode', 'remove']) {
+      out[name] = (el, ...args) => {
+        const d = el instanceof Element ? find(el, name) : null;
+        return (d && typeof d.value === 'function' ? d.value : el[name]).apply(el, args);
+      };
+    }
+    // The form's own properties: <input name="action"> hides form.action.
+    for (const name of ['action', 'method', 'elements', 'autocomplete']) {
+      out['form' + name[0].toUpperCase() + name.slice(1)] = (f) => {
+        const d = f instanceof HTMLFormElement ? find(f, name) : null;
+        return d && d.get ? d.get.call(f) : f[name];
+      };
+    }
+    return out;
+  })();
 
   // Every url(...) reference in a CSS string, found in one pass with bounded look-ahead. The regexes
   // this replaces used a lazy `.*?` with a back-reference and went quadratic on text with many
@@ -67,15 +106,15 @@
   }
   function parentOf(el) {
     if (!el) return null;
-    if (el.parentElement) return el.parentElement;
-    const root = el.getRootNode && el.getRootNode();
+    if (dom.parentElement(el)) return dom.parentElement(el);
+    const root = el.getRootNode && dom.getRootNode(el);
     return root && root.host ? root.host : null; // pierce shadow boundary
   }
 
   function deepestAt(x, y) {
     let el = document.elementFromPoint(x, y);
-    while (el && el.shadowRoot) {
-      const inner = el.shadowRoot.elementFromPoint(x, y);
+    while (el && dom.shadowRoot(el)) {
+      const inner = dom.shadowRoot(el).elementFromPoint(x, y);
       if (!inner || inner === el) break;
       el = inner;
     }
@@ -92,15 +131,15 @@
     return window.CSS && CSS.escape ? CSS.escape(s) : s.replace(/([^\w-])/g, '\\$1');
   }
   function countMatches(root, sel) {
-    return safe(() => root.querySelectorAll(sel).length, -1);
+    return safe(() => dom.querySelectorAll(root, sel).length, -1);
   }
 
   function selectorsFor(el) {
-    const root = el.getRootNode ? el.getRootNode() : document;
+    const root = el.getRootNode ? dom.getRootNode(el) : document;
     const scope = root.querySelectorAll ? root : document;
     const out = [];
-    const tag = lc(el.tagName);
-    const unique = (sel) => countMatches(scope, sel) === 1 && scope.querySelector(sel) === el;
+    const tag = lc(dom.tagName(el));
+    const unique = (sel) => countMatches(scope, sel) === 1 && dom.querySelector(scope, sel) === el;
 
     if (el.id) {
       const sel = '#' + cssEsc(el.id);
@@ -122,7 +161,7 @@
       'alt',
       'href',
     ]) {
-      const v = el.getAttribute && el.getAttribute(a);
+      const v = el.getAttribute && dom.getAttribute(el, a);
       // Backslash is escaped as well as the quote (an unescaped one lets the value close the string),
       // and values with control characters are skipped rather than quoted.
       // eslint-disable-next-line no-control-regex -- control characters are exactly what is being rejected
@@ -139,7 +178,7 @@
         break;
       }
     }
-    const stable = [...(el.classList || [])].filter((c) => !AUTO_CLASS.test(c));
+    const stable = [...(dom.classList(el) || [])].filter((c) => !AUTO_CLASS.test(c));
     if (stable.length) {
       for (let n = 1; n <= Math.min(3, stable.length); n++) {
         const sel =
@@ -159,14 +198,14 @@
     let cur = el;
     let depth = 0;
     while (cur && isEl(cur) && depth < 12) {
-      const p = cur.parentElement;
-      let part = lc(cur.tagName);
+      const p = dom.parentElement(cur);
+      let part = lc(dom.tagName(cur));
       if (cur.id && !AUTO_ID.test(cur.id) && countMatches(document, '#' + cssEsc(cur.id)) === 1) {
         parts.unshift('#' + cssEsc(cur.id));
         break;
       }
       if (p) {
-        const same = [...p.children].filter((c) => c.tagName === cur.tagName);
+        const same = [...dom.children(p)].filter((c) => dom.tagName(c) === dom.tagName(cur));
         if (same.length > 1) part += `:nth-of-type(${same.indexOf(cur) + 1})`;
       }
       parts.unshift(part);
@@ -179,12 +218,12 @@
       kind: 'path',
       selector: pathSel,
       score: Math.max(8, 38 - parts.length * 3),
-      verified: safe(() => scope.querySelector(pathSel) === el, false),
+      verified: safe(() => dom.querySelector(scope, pathSel) === el, false),
     });
-    const txt = (el.textContent || '').trim().replace(/\s+/g, ' ');
+    const txt = (dom.textContent(el) || '').trim().replace(/\s+/g, ' ');
     const xp = xpathFor(el);
     out.push({ kind: 'xpath', selector: xp, score: txt && txt.length < 40 ? 55 : 30 });
-    if (txt && txt.length > 0 && txt.length < 40 && !el.children.length) {
+    if (txt && txt.length > 0 && txt.length < 40 && !dom.children(el).length) {
       out.push({
         kind: 'xpath-text',
         selector: `//${tag}[normalize-space(.)=${xpathStr(txt)}]`,
@@ -205,9 +244,9 @@
     const parts = [];
     let cur = el;
     while (cur && isEl(cur)) {
-      const p = cur.parentElement;
-      const same = p ? [...p.children].filter((c) => c.tagName === cur.tagName) : [cur];
-      parts.unshift(lc(cur.tagName) + (same.length > 1 ? `[${same.indexOf(cur) + 1}]` : ''));
+      const p = dom.parentElement(cur);
+      const same = p ? [...dom.children(p)].filter((c) => dom.tagName(c) === dom.tagName(cur)) : [cur];
+      parts.unshift(lc(dom.tagName(cur)) + (same.length > 1 ? `[${same.indexOf(cur) + 1}]` : ''));
       cur = p;
     }
     return '/' + parts.join('/');
@@ -285,7 +324,7 @@
     }
     // Remember what the box is attached to so scrolling/resizing can keep it glued to the element.
     state.boxed = { el, label: fixedLabel };
-    const r = el.getBoundingClientRect();
+    const r = dom.getBoundingClientRect(el);
     box.style.display = 'block';
     box.style.left = r.left + 'px';
     box.style.top = r.top + 'px';
@@ -293,7 +332,7 @@
     box.style.height = r.height + 'px';
     label.textContent =
       fixedLabel ||
-      lc(el.tagName) +
+      lc(dom.tagName(el)) +
         (el.id ? '#' + el.id : '') +
         ' ' +
         Math.round(r.width) +
@@ -371,10 +410,31 @@
     document.addEventListener('click', onClick, true);
     document.addEventListener('keydown', onKey, true);
     blockers.forEach((n) => document.addEventListener(n, blockEv, true));
+    // Pick mode swallows the page's mouse events. If the panel is closed while it is on, nothing else
+    // would turn it off. The panel keeps this port open (panel/boot.js), so when the panel goes away
+    // the port drops and picking stops.
+    try {
+      state.pickPort = chrome.runtime.connect({ name: 'df-pick' });
+      state.pickPort.onDisconnect.addListener(() => {
+        state.pickPort = null;
+        if (state.picking) stopPick();
+      });
+    } catch (_) {
+      /* the extension was reloaded: Esc still ends picking */
+    }
     return { ok: true };
   }
   function stopPick() {
     state.picking = false;
+    if (state.pickPort) {
+      const port = state.pickPort;
+      state.pickPort = null;
+      try {
+        port.disconnect();
+      } catch (_) {
+        /* already closed */
+      }
+    }
     document.removeEventListener('mousemove', onMove, true);
     document.removeEventListener('click', onClick, true);
     document.removeEventListener('keydown', onKey, true);
@@ -413,9 +473,9 @@
     let n = null;
     if (dir === 'parent') n = parentOf(el);
     else if (dir === 'child')
-      n = el.firstElementChild || (el.shadowRoot && el.shadowRoot.firstElementChild);
-    else if (dir === 'next') n = el.nextElementSibling;
-    else if (dir === 'prev') n = el.previousElementSibling;
+      n = dom.firstElementChild(el) || (dom.shadowRoot(el) && dom.firstElementChild(dom.shadowRoot(el)));
+    else if (dir === 'next') n = dom.nextElementSibling(el);
+    else if (dir === 'prev') n = dom.previousElementSibling(el);
     if (!n || !isEl(n)) throw new Error('No ' + dir + ' element.');
     select(n);
     return describe(n);
@@ -425,33 +485,33 @@
   function nodeBrief(el) {
     return {
       h: handleOf(el),
-      tag: lc(el.tagName),
+      tag: lc(dom.tagName(el)),
       id: el.id || '',
       cls:
         typeof el.className === 'string'
           ? el.className
-          : (el.getAttribute && el.getAttribute('class')) || '',
-      kids: el.children.length + (el.shadowRoot ? 1 : 0),
-      shadow: !!el.shadowRoot,
-      text: el.children.length ? '' : clip((el.textContent || '').trim(), 40),
-      frame: el.tagName === 'IFRAME' || el.tagName === 'FRAME',
+          : (el.getAttribute && dom.getAttribute(el, 'class')) || '',
+      kids: dom.children(el).length + (dom.shadowRoot(el) ? 1 : 0),
+      shadow: !!dom.shadowRoot(el),
+      text: dom.children(el).length ? '' : clip((dom.textContent(el) || '').trim(), 40),
+      frame: dom.tagName(el) === 'IFRAME' || dom.tagName(el) === 'FRAME',
     };
   }
   function children(h) {
     const el = h ? target(h) : document.documentElement;
     // DevForge's own overlay/helper nodes ("__df_" ids) are not part of the page.
     // Cap before building rows: each row also registers a handle, and a page can have a million children.
-    const out = [...el.children].filter((c) => !/^__df_/.test(c.id)).slice(0, 501).map(nodeBrief);
+    const out = [...dom.children(el)].filter((c) => !/^__df_/.test(c.id)).slice(0, 501).map(nodeBrief);
     let shadow = null;
-    if (el.shadowRoot) shadow = [...el.shadowRoot.children].slice(0, 500).map(nodeBrief);
+    if (dom.shadowRoot(el)) shadow = [...dom.children(dom.shadowRoot(el))].slice(0, 500).map(nodeBrief);
     let frame = null;
-    if (el.tagName === 'IFRAME') {
+    if (dom.tagName(el) === 'IFRAME') {
       try {
         const d = el.contentDocument;
         frame = d
           ? prov('accessible', 'observed')
           : prov('cross-origin iframe: content not accessible from this context', 'unavailable');
-        if (d) for (const c of [...d.documentElement.children].slice(0, 500)) out.push(nodeBrief(c));
+        if (d) for (const c of [...dom.children(d.documentElement)].slice(0, 500)) out.push(nodeBrief(c));
       } catch (_) {
         frame = prov('cross-origin iframe', 'unavailable');
       }
@@ -466,9 +526,9 @@
       chain.unshift({
         h: handleOf(c),
         label:
-          lc(c.tagName) +
+          lc(dom.tagName(c)) +
           (c.id ? '#' + c.id : '') +
-          (c.classList && c.classList.length ? '.' + [...c.classList].slice(0, 2).join('.') : ''),
+          (dom.classList(c) && dom.classList(c).length ? '.' + [...dom.classList(c)].slice(0, 2).join('.') : ''),
       });
       c = parentOf(c);
     }
@@ -502,13 +562,13 @@
         while (w.nextNode() && n++ < MAX_NODES && res.length < 200) {
           const el = w.currentNode;
           const hay = (
-            lc(el.tagName) +
+            lc(dom.tagName(el)) +
             ' ' +
             el.id +
             ' ' +
-            (el.getAttribute('class') || '') +
+            (dom.getAttribute(el, 'class') || '') +
             ' ' +
-            (el.children.length ? '' : el.textContent)
+            (dom.children(el).length ? '' : dom.textContent(el))
           ).toLowerCase();
           if (hay.includes(ql)) res.push(nodeBrief(el));
         }
@@ -529,7 +589,7 @@
     while (c && isEl(c)) {
       const p = getComputedStyle(c).position;
       if (p !== 'static') {
-        pos = lc(c.tagName) + (c.id ? '#' + c.id : '');
+        pos = lc(dom.tagName(c)) + (c.id ? '#' + c.id : '');
         break;
       }
       c = parentOf(c);
@@ -549,7 +609,7 @@
       if (s.mixBlendMode !== 'normal') r.push('mix-blend-mode');
       if (/(transform|opacity|filter)/.test(s.willChange)) r.push('will-change');
       if (s.contain && /(layout|paint|strict|content)/.test(s.contain)) r.push('contain');
-      const pe = e.parentElement && getComputedStyle(e.parentElement);
+      const pe = dom.parentElement(e) && getComputedStyle(dom.parentElement(e));
       if (pe && /(flex|grid)/.test(pe.display) && s.zIndex !== 'auto')
         r.push('flex/grid item + z-index');
       return r;
@@ -561,7 +621,7 @@
       nearest = 'root';
     while (a && isEl(a)) {
       if (stackingOf(getComputedStyle(a), a).length) {
-        nearest = lc(a.tagName) + (a.id ? '#' + a.id : '');
+        nearest = lc(dom.tagName(a)) + (a.id ? '#' + a.id : '');
         break;
       }
       a = parentOf(a);
@@ -572,26 +632,26 @@
   }
 
   function a11yInfo(el) {
-    const role = el.getAttribute('role') || implicitRole(el);
-    let name = el.getAttribute('aria-label') || '';
-    const lb = el.getAttribute('aria-labelledby');
+    const role = dom.getAttribute(el, 'role') || implicitRole(el);
+    let name = dom.getAttribute(el, 'aria-label') || '';
+    const lb = dom.getAttribute(el, 'aria-labelledby');
     if (!name && lb)
       name = lb
         .split(/\s+/)
         .map((id) => {
           const n = document.getElementById(id);
-          return n ? n.textContent.trim() : '';
+          return n ? dom.textContent(n).trim() : '';
         })
         .join(' ')
         .trim();
     if (!name && el.labels && el.labels.length)
-      name = [...el.labels].map((l) => l.textContent.trim()).join(' ');
-    if (!name && el.tagName === 'IMG') name = el.getAttribute('alt') || '';
-    if (!name && /^(A|BUTTON|SUMMARY|LABEL)$/.test(el.tagName))
-      name = (el.textContent || '').trim();
-    if (!name) name = el.getAttribute('title') || '';
+      name = [...el.labels].map((l) => dom.textContent(l).trim()).join(' ');
+    if (!name && dom.tagName(el) === 'IMG') name = dom.getAttribute(el, 'alt') || '';
+    if (!name && /^(A|BUTTON|SUMMARY|LABEL)$/.test(dom.tagName(el)))
+      name = (dom.textContent(el) || '').trim();
+    if (!name) name = dom.getAttribute(el, 'title') || '';
     const aria = {};
-    for (const a of el.attributes) if (a.name.startsWith('aria-')) aria[a.name] = a.value;
+    for (const a of dom.attributes(el)) if (a.name.startsWith('aria-')) aria[a.name] = a.value;
     return {
       role: prov(role || null, role ? 'inferred' : 'unavailable'),
       accessibleName: prov(clip(name, 200) || null, name ? 'inferred' : 'unavailable', {
@@ -603,9 +663,9 @@
     };
   }
   function implicitRole(el) {
-    const t = lc(el.tagName);
+    const t = lc(dom.tagName(el));
     const map = {
-      a: el.hasAttribute('href') ? 'link' : null,
+      a: dom.hasAttribute(el, 'href') ? 'link' : null,
       button: 'button',
       nav: 'navigation',
       main: 'main',
@@ -617,7 +677,7 @@
       ol: 'list',
       li: 'listitem',
       table: 'table',
-      img: el.getAttribute('alt') === '' ? 'presentation' : 'img',
+      img: dom.getAttribute(el, 'alt') === '' ? 'presentation' : 'img',
       h1: 'heading',
       h2: 'heading',
       h3: 'heading',
@@ -671,23 +731,23 @@
   }
 
   function describe(el) {
-    const r = el.getBoundingClientRect();
+    const r = dom.getBoundingClientRect(el);
     const cs = getComputedStyle(el);
     const attrs = {};
-    for (const a of el.attributes) attrs[a.name] = clip(a.value, 300);
+    for (const a of dom.attributes(el)) attrs[a.name] = clip(a.value, 300);
     const sels = selectorsFor(el);
     return {
       h: handleOf(el),
-      tag: lc(el.tagName),
+      tag: lc(dom.tagName(el)),
       ancestry: ancestry(el),
       attributes: prov(attrs, 'observed'),
       id: el.id || '',
-      classes: [...(el.classList || [])],
+      classes: [...(dom.classList(el) || [])],
       htmlPreview: clip(el.outerHTML, 2500),
       htmlLength: el.outerHTML.length,
-      text: clip((el.textContent || '').trim().replace(/\s+/g, ' '), 300),
-      inShadow: !!(el.getRootNode && el.getRootNode().host),
-      shadowRoot: el.shadowRoot
+      text: clip((dom.textContent(el) || '').trim().replace(/\s+/g, ' '), 300),
+      inShadow: !!(el.getRootNode && dom.getRootNode(el).host),
+      shadowRoot: dom.shadowRoot(el)
         ? prov('open', 'observed')
         : prov('none or closed (closed roots cannot be inspected)', 'unavailable'),
       box: {
@@ -742,21 +802,21 @@
     };
   }
   function formInfo(el) {
-    const f = el.form || (lc(el.tagName) === 'form' ? el : null);
-    if (!f && !/^(input|select|textarea|button)$/.test(lc(el.tagName))) return null;
+    const f = el.form || (lc(dom.tagName(el)) === 'form' ? el : null);
+    if (!f && !/^(input|select|textarea|button)$/.test(lc(dom.tagName(el)))) return null;
     return {
       name: el.name || null,
       type: el.type || null,
       required: !!el.required,
       disabled: !!el.disabled,
       form: f
-        ? { action: f.getAttribute('action'), method: f.method, fields: f.elements.length }
+        ? { action: dom.getAttribute(f, 'action'), method: dom.formMethod(f), fields: dom.formElements(f).length }
         : null,
     };
   }
   function inlineHandlers(el) {
     const out = [];
-    for (const a of el.attributes)
+    for (const a of dom.attributes(el))
       if (/^on/i.test(a.name)) out.push({ attr: a.name, code: clip(a.value, 200) });
     return out;
   }
@@ -765,29 +825,29 @@
   // reads those through a separate main-world probe (see probeDispatch).
   function detectFramework(el) {
     const found = [];
-    if (el.hasAttribute('data-reactroot') || el.closest('[data-reactroot]'))
+    if (dom.hasAttribute(el, 'data-reactroot') || dom.closest(el, '[data-reactroot]'))
       found.push('React (data-reactroot)');
-    if ([...el.attributes].some((a) => /^data-v-[0-9a-f]{6,}$/.test(a.name)))
+    if ([...dom.attributes(el)].some((a) => /^data-v-[0-9a-f]{6,}$/.test(a.name)))
       found.push('Vue (scoped style attribute)');
-    if ([...el.classList].some((c) => /^svelte-/.test(c))) found.push('Svelte');
+    if ([...dom.classList(el)].some((c) => /^svelte-/.test(c))) found.push('Svelte');
     if (
-      [...el.attributes].some((a) => /^_ng(content|host)|^ng-/.test(a.name)) ||
-      el.hasAttribute('ng-version')
+      [...dom.attributes(el)].some((a) => /^_ng(content|host)|^ng-/.test(a.name)) ||
+      dom.hasAttribute(el, 'ng-version')
     )
       found.push('Angular');
     // window.customElements is null in an extension's isolated world, so the registry can't be
     // consulted here; a defined custom element is recognisable by its upgraded shadow root instead.
-    if (el.tagName.includes('-'))
+    if (dom.tagName(el).includes('-'))
       found.push(
-        'Custom element <' + lc(el.tagName) + '>' + (el.shadowRoot ? ' (open shadow root)' : '')
+        'Custom element <' + lc(dom.tagName(el)) + '>' + (dom.shadowRoot(el) ? ' (open shadow root)' : '')
       );
     if (
-      [...el.classList].some((c) =>
+      [...dom.classList(el)].some((c) =>
         /^(tw-|bg-|text-|flex$|grid$|p[xytblr]?-\d|m[xytblr]?-\d)/.test(c)
       )
     )
       found.push('Tailwind-style utility classes');
-    if ([...el.classList].some((c) => /^(btn|container|row|col-)/.test(c)))
+    if ([...dom.classList(el)].some((c) => /^(btn|container|row|col-)/.test(c)))
       found.push('Bootstrap-style classes');
     return found;
   }
@@ -810,10 +870,10 @@
     };
     const nodes = [];
     const gather = (root) => {
-      for (const n of [root, ...root.querySelectorAll('*')]) {
+      for (const n of [root, ...dom.querySelectorAll(root, '*')]) {
         if (nodes.length >= 1500) return;
         nodes.push(n);
-        if (n.shadowRoot) for (const c of n.shadowRoot.children) gather(c);
+        if (dom.shadowRoot(n)) for (const c of dom.children(dom.shadowRoot(n))) gather(c);
       }
     };
     gather(el);
@@ -822,33 +882,33 @@
         if (cs[prop] && /url\(/.test(cs[prop])) cssUrls(cs[prop], 20).forEach((u) => add('background-image', u.value, via + ' ' + prop));
     };
     for (const n of nodes) {
-      const t = lc(n.tagName);
+      const t = lc(dom.tagName(n));
       if (t === 'img') {
         if (n.currentSrc || n.src) add('image', n.currentSrc || n.src, 'img');
         if (n.srcset) srcsetUrls(n.srcset).forEach((u) => add('image', u, 'img srcset'));
       }
       if (t === 'source' && n.srcset) srcsetUrls(n.srcset).forEach((u) => add('image', u, 'picture source srcset'));
-      if (t === 'source' && n.getAttribute('src')) add('media', n.getAttribute('src'), 'source');
+      if (t === 'source' && dom.getAttribute(n, 'src')) add('media', dom.getAttribute(n, 'src'), 'source');
       if (t === 'video' || t === 'audio') {
         if (n.currentSrc) add('media', n.currentSrc, t);
-        if (n.getAttribute('poster')) add('image', n.getAttribute('poster'), 'video poster');
+        if (dom.getAttribute(n, 'poster')) add('image', dom.getAttribute(n, 'poster'), 'video poster');
       }
-      if (t === 'track' && n.getAttribute('src')) add('media', n.getAttribute('src'), 'track');
-      if (t === 'object' && n.getAttribute('data')) add('media', n.getAttribute('data'), 'object');
-      if (t === 'embed' && n.getAttribute('src')) add('media', n.getAttribute('src'), 'embed');
-      if (t === 'input' && n.type === 'image' && n.getAttribute('src')) add('image', n.getAttribute('src'), 'input image');
-      if (t === 'iframe' && n.getAttribute('src')) add('frame', n.getAttribute('src'), 'iframe (not downloaded)');
-      if (t === 'link' && n.getAttribute('href') && /icon|stylesheet|preload/i.test(n.rel || '')) add(/stylesheet/i.test(n.rel) ? 'stylesheet' : 'image', n.getAttribute('href'), 'link rel=' + n.rel);
+      if (t === 'track' && dom.getAttribute(n, 'src')) add('media', dom.getAttribute(n, 'src'), 'track');
+      if (t === 'object' && dom.getAttribute(n, 'data')) add('media', dom.getAttribute(n, 'data'), 'object');
+      if (t === 'embed' && dom.getAttribute(n, 'src')) add('media', dom.getAttribute(n, 'src'), 'embed');
+      if (t === 'input' && n.type === 'image' && dom.getAttribute(n, 'src')) add('image', dom.getAttribute(n, 'src'), 'input image');
+      if (t === 'iframe' && dom.getAttribute(n, 'src')) add('frame', dom.getAttribute(n, 'src'), 'iframe (not downloaded)');
+      if (t === 'link' && dom.getAttribute(n, 'href') && /icon|stylesheet|preload/i.test(n.rel || '')) add(/stylesheet/i.test(n.rel) ? 'stylesheet' : 'image', dom.getAttribute(n, 'href'), 'link rel=' + n.rel);
       if (t === 'svg') out.push({ type: 'svg-inline', url: null });
-      if (t === 'image' && (n.getAttribute('href') || n.getAttribute('xlink:href'))) add('image', n.getAttribute('href') || n.getAttribute('xlink:href'), 'svg image');
+      if (t === 'image' && (dom.getAttribute(n, 'href') || dom.getAttribute(n, 'xlink:href'))) add('image', dom.getAttribute(n, 'href') || dom.getAttribute(n, 'xlink:href'), 'svg image');
       if (t === 'use') {
-        const hr = n.getAttribute('href') || n.getAttribute('xlink:href');
+        const hr = dom.getAttribute(n, 'href') || dom.getAttribute(n, 'xlink:href');
         if (hr) out.push({ type: 'svg-use', url: hr });
       }
       for (const lazy of ['data-src', 'data-lazy-src', 'data-original', 'data-bg'])
-        if (n.getAttribute && n.getAttribute(lazy) && /^(https?:|\/|\.)/.test(n.getAttribute(lazy))) add('image', n.getAttribute(lazy), 'lazy-load attribute ' + lazy);
-      if (n.getAttribute && n.getAttribute('data-srcset')) srcsetUrls(n.getAttribute('data-srcset')).forEach((u) => add('image', u, 'lazy-load data-srcset'));
-      if (t === 'a' && /\.(pdf|zip|docx?|xlsx?|pptx?|csv|txt)(\?|#|$)/i.test(n.getAttribute('href') || '')) add('document', n.getAttribute('href'), 'link (not downloaded)');
+        if (n.getAttribute && dom.getAttribute(n, lazy) && /^(https?:|\/|\.)/.test(dom.getAttribute(n, lazy))) add('image', dom.getAttribute(n, lazy), 'lazy-load attribute ' + lazy);
+      if (n.getAttribute && dom.getAttribute(n, 'data-srcset')) srcsetUrls(dom.getAttribute(n, 'data-srcset')).forEach((u) => add('image', u, 'lazy-load data-srcset'));
+      if (t === 'a' && /\.(pdf|zip|docx?|xlsx?|pptx?|csv|txt)(\?|#|$)/i.test(dom.getAttribute(n, 'href') || '')) add('document', dom.getAttribute(n, 'href'), 'link (not downloaded)');
       cssImages(getComputedStyle(n), 'css');
       if (nodes.length < 600) {
         for (const pe of ['::before', '::after']) {
@@ -946,7 +1006,7 @@
   function sheetLabel(sheet, idx) {
     if (sheet.href) return sheet.href;
     const o = sheet.ownerNode;
-    if (o && o.tagName === 'STYLE') return `<style> #${idx}` + (o.id ? ' (#' + o.id + ')' : '');
+    if (o && dom.tagName(o) === 'STYLE') return `<style> #${idx}` + (o.id ? ' (#' + o.id + ')' : '');
     return `adopted/constructed stylesheet #${idx}`;
   }
 
@@ -997,7 +1057,7 @@
     return out;
   }
   function matchedRules(el) {
-    const root = el.getRootNode && el.getRootNode();
+    const root = el.getRootNode && dom.getRootNode(el);
     const sheets = [...allSheets(root && root.styleSheets ? root : document)];
     if (root !== document) sheets.push(...allSheets(document)); // light-DOM sheets still can match via :host/::slotted; keep simple
     const matches = [];
@@ -1022,7 +1082,7 @@
             let hit = null;
             const sels = splitSelectors(rule.selectorText).map((s) => s.trim());
             for (const s of sels) {
-              if (safe(() => el.matches(s), false)) {
+              if (safe(() => dom.matches(el, s), false)) {
                 const sp = specificity(s);
                 if (!hit || cmpSpec(sp, hit.spec) > 0) hit = { s, spec: sp };
               }
@@ -1142,7 +1202,7 @@
           if (r) {
             inherited[p] = {
               value: getComputedStyle(el).getPropertyValue(p),
-              inheritedFrom: lc(a.tagName) + (a.id ? '#' + a.id : ''),
+              inheritedFrom: lc(dom.tagName(a)) + (a.id ? '#' + a.id : ''),
             };
             break;
           }
@@ -1269,8 +1329,8 @@
       el.innerHTML = op[v];
     } else if (op.kind === 'attr') {
       if (!el) throw new Error('Element no longer exists');
-      if (op[v] == null) el.removeAttribute(op.prop);
-      else el.setAttribute(op.prop, op[v]);
+      if (op[v] == null) dom.removeAttribute(el, op.prop);
+      else dom.setAttribute(el, op.prop, op[v]);
     } else if (op.kind === 'css-rule') {
       ensureStyleEl();
       state.styleEl.textContent = op[v] || '';
@@ -1279,11 +1339,11 @@
       const node = op._node || el;
       if (dir === 'do') {
         if (!node || !node.isConnected) throw new Error('Element no longer exists');
-        op._parent = node.parentNode;
-        op._next = node.nextSibling;
-        node.remove();
+        op._parent = dom.parentNode(node);
+        op._next = dom.nextSibling(node);
+        dom.remove(node);
       } else if (op._parent) {
-        const next = op._next && op._next.parentNode === op._parent ? op._next : null;
+        const next = op._next && dom.parentNode(op._next) === op._parent ? op._next : null;
         op._parent.insertBefore(node, next);
       }
     } else if (op.kind === 'hide') {
@@ -1352,7 +1412,7 @@
       op = {
         kind: 'text',
         h,
-        before: el.textContent,
+        before: dom.textContent(el),
         beforeHTML: el.innerHTML,
         after: spec.value,
         selector: sel,
@@ -1370,7 +1430,7 @@
         kind: 'attr',
         h,
         prop: name,
-        before: el.getAttribute(name),
+        before: dom.getAttribute(el, name),
         after: spec.value,
         selector: sel,
       };
@@ -1380,7 +1440,7 @@
       ensureStyleEl();
       op = {
         kind: 'css-rule',
-        before: state.styleEl.textContent,
+        before: dom.textContent(state.styleEl),
         after: spec.value,
         selector: '(override stylesheet)',
       };
@@ -1516,7 +1576,7 @@
           sels.forEach((s) => {
             // Drop the pseudo-class only where it is a whole token (":hover", not ":hover-intent").
             const base = s.replace(new RegExp(pseudo + '(?![\\w-])', 'g'), '') || '*';
-            if (!safe(() => el.matches(base), false)) return;
+            if (!safe(() => dom.matches(el, base), false)) return;
             // Declarations that are already !important must not get a second "!important".
             const decls = parseDecls(r.style)
               .map((d) => `${d.prop}: ${d.value} !important;`)
@@ -1547,9 +1607,8 @@
   function scriptsInfo() {
     const out = [];
     document.querySelectorAll('script').forEach((s, i) => {
-      if (s.id === '__df_bridge') return;
       const src = s.src || null;
-      const code = s.textContent || '';
+      const code = dom.textContent(s) || '';
       const minified =
         code.length > 500 &&
         (code.split('\n').length < 5 || code.length / Math.max(1, code.split('\n').length) > 300);
@@ -1673,10 +1732,10 @@
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     for (let n = walker.nextNode(); n && scanned < 4000; n = walker.nextNode()) {
       if (!n.nodeValue.trim()) continue;
-      const el = n.parentElement;
+      const el = dom.parentElement(n);
       if (!el || seen.has(el) || kit.isOwn(el)) continue;
       seen.add(el);
-      const tn = lc(el.tagName);
+      const tn = lc(dom.tagName(el));
       if (tn === 'script' || tn === 'style' || tn === 'noscript' || tn === 'template') continue;
       if (!visible(el)) continue;
       scanned++;
@@ -1714,7 +1773,7 @@
   }
   function visible(el) {
     const cs = getComputedStyle(el);
-    const r = el.getBoundingClientRect();
+    const r = dom.getBoundingClientRect(el);
     return cs.display !== 'none' && cs.visibility !== 'hidden' && (r.width > 0 || r.height > 0);
   }
 
@@ -1731,12 +1790,12 @@
         fix,
         snippet: clip(el.outerHTML, 160),
       });
-    const all = [root, ...root.querySelectorAll('*')];
+    const all = [root, ...dom.querySelectorAll(root, '*')];
     let checked = 0;
     for (const el of all.slice(0, MAX_NODES)) {
       checked++;
-      const t = lc(el.tagName);
-      if (t === 'img' && !el.hasAttribute('alt') && el.getAttribute('role') !== 'presentation')
+      const t = lc(dom.tagName(el));
+      if (t === 'img' && !dom.hasAttribute(el, 'alt') && dom.getAttribute(el, 'role') !== 'presentation')
         add(
           'error',
           'img-alt',
@@ -1744,7 +1803,7 @@
           'Image has no alt attribute.',
           'Add alt="description", or alt="" if purely decorative.'
         );
-      if (t === 'button' || el.getAttribute('role') === 'button') {
+      if (t === 'button' || dom.getAttribute(el, 'role') === 'button') {
         if (!a11yInfo(el).accessibleName.value)
           add(
             'error',
@@ -1755,7 +1814,7 @@
           );
       }
       if (t === 'a') {
-        if (!el.hasAttribute('href') && !el.getAttribute('role'))
+        if (!dom.hasAttribute(el, 'href') && !dom.getAttribute(el, 'role'))
           add(
             'warn',
             'link-href',
@@ -1763,7 +1822,7 @@
             'Anchor without href is not keyboard focusable or announced as a link.',
             'Add href or use a <button>.'
           );
-        else if (!a11yInfo(el).accessibleName.value && !el.querySelector('img[alt]'))
+        else if (!a11yInfo(el).accessibleName.value && !dom.querySelector(el, 'img[alt]'))
           add(
             'error',
             'link-name',
@@ -1785,8 +1844,8 @@
             'Associate a <label for>, wrap with <label>, or add aria-label.'
           );
       }
-      if (el.hasAttribute('aria-labelledby'))
-        el.getAttribute('aria-labelledby')
+      if (dom.hasAttribute(el, 'aria-labelledby'))
+        dom.getAttribute(el, 'aria-labelledby')
           .split(/\s+/)
           .forEach((id) => {
             if (!document.getElementById(id))
@@ -1798,8 +1857,8 @@
                 'Fix or remove the reference.'
               );
           });
-      if (el.hasAttribute('aria-describedby'))
-        el.getAttribute('aria-describedby')
+      if (dom.hasAttribute(el, 'aria-describedby'))
+        dom.getAttribute(el, 'aria-describedby')
           .split(/\s+/)
           .forEach((id) => {
             if (!document.getElementById(id))
@@ -1812,8 +1871,8 @@
               );
           });
       if (
-        el.getAttribute('aria-hidden') === 'true' &&
-        el.matches('a,button,input,select,textarea,[tabindex]:not([tabindex="-1"])')
+        dom.getAttribute(el, 'aria-hidden') === 'true' &&
+        dom.matches(el, 'a,button,input,select,textarea,[tabindex]:not([tabindex="-1"])')
       )
         add(
           'error',
@@ -1822,7 +1881,7 @@
           'Focusable element is hidden from assistive tech.',
           'Remove aria-hidden or make it non-focusable.'
         );
-      if (el.hasAttribute('tabindex') && parseInt(el.getAttribute('tabindex'), 10) > 0)
+      if (dom.hasAttribute(el, 'tabindex') && parseInt(dom.getAttribute(el, 'tabindex'), 10) > 0)
         add(
           'warn',
           'tabindex-positive',
@@ -1831,10 +1890,8 @@
           'Use tabindex="0" or restructure DOM order.'
         );
       if (
-        (el.onclick || el.hasAttribute('onclick')) &&
-        !el.matches(
-          'a[href],button,input,select,textarea,summary,[tabindex],[role=button],[role=link]'
-        )
+        (el.onclick || dom.hasAttribute(el, 'onclick')) &&
+        !dom.matches(el, 'a[href],button,input,select,textarea,summary,[tabindex],[role=button],[role=link]')
       )
         add(
           'warn',
@@ -1844,7 +1901,7 @@
           'Use <button> or add role, tabindex="0" and key handlers.'
         );
       if (el.hasChildNodes() && visible(el)) {
-        const direct = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+        const direct = [...dom.childNodes(el)].some((n) => dom.nodeType(n) === 3 && dom.textContent(n).trim());
         if (direct) {
           const c = contrastOf(el);
           if (!c.unknown && c.exact < c.required)
@@ -1858,10 +1915,10 @@
         }
       }
     }
-    const heads = [...root.querySelectorAll('h1,h2,h3,h4,h5,h6')].filter(visible);
+    const heads = [...dom.querySelectorAll(root, 'h1,h2,h3,h4,h5,h6')].filter(visible);
     let prev = 0;
     heads.forEach((hd) => {
-      const l = parseInt(hd.tagName[1], 10);
+      const l = parseInt(dom.tagName(hd)[1], 10);
       if (prev && l > prev + 1)
         add(
           'warn',
@@ -1887,11 +1944,11 @@
           message: 'Document has no <title>.',
           fix: 'Add a descriptive title.',
         });
-      if (heads.filter((x) => x.tagName === 'H1').length !== 1)
+      if (heads.filter((x) => dom.tagName(x) === 'H1').length !== 1)
         issues.push({
           severity: 'warn',
           rule: 'h1-count',
-          message: `Page has ${heads.filter((x) => x.tagName === 'H1').length} h1 elements.`,
+          message: `Page has ${heads.filter((x) => dom.tagName(x) === 'H1').length} h1 elements.`,
           fix: 'Use exactly one h1.',
         });
       if (!document.querySelector('main,[role=main]'))
@@ -1947,9 +2004,9 @@
     while (w.nextNode() && n++ < MAX_NODES) {
       let d = 0,
         c = w.currentNode;
-      while (c.parentElement) {
+      while (dom.parentElement(c)) {
         d++;
-        c = c.parentElement;
+        c = dom.parentElement(c);
       }
       if (d > maxDepth) maxDepth = d;
     }
@@ -1962,11 +2019,11 @@
     big.forEach((b) => tips.push(`Large resource (${b.kb} KB): ${b.url}`));
     const imgs = [...document.images];
     const noDim = imgs.filter(
-      (i) => !i.getAttribute('width') && !i.getAttribute('height') && !i.style.aspectRatio
+      (i) => !dom.getAttribute(i, 'width') && !dom.getAttribute(i, 'height') && !i.style.aspectRatio
     ).length;
     if (noDim) tips.push(`${noDim} image(s) lack width/height, which can cause layout shift.`);
     const lazyMiss = imgs.filter(
-      (i) => i.getBoundingClientRect().top > innerHeight * 2 && i.loading !== 'lazy'
+      (i) => dom.getBoundingClientRect(i).top > innerHeight * 2 && i.loading !== 'lazy'
     ).length;
     if (lazyMiss) tips.push(`${lazyMiss} below-the-fold image(s) are not loading="lazy".`);
     const blocking = [
@@ -2035,12 +2092,12 @@
         add('error', 'mixed-content', 'Mixed content resource', r.name);
     });
     document.querySelectorAll('[src],[href],[action]').forEach((el) => {
-      const u = el.getAttribute('src') || el.getAttribute('href') || el.getAttribute('action');
+      const u = dom.getAttribute(el, 'src') || dom.getAttribute(el, 'href') || dom.getAttribute(el, 'action');
       if (u && /^http:\/\//i.test(u) && location.protocol === 'https:')
-        add('warn', 'http-url', 'http:// URL in markup', `<${lc(el.tagName)}> ${clip(u, 120)}`);
+        add('warn', 'http-url', 'http:// URL in markup', `<${lc(dom.tagName(el))}> ${clip(u, 120)}`);
       if (u && /^\s*javascript:/i.test(u))
         // eslint-disable-next-line no-script-url -- this is the pattern for DETECTING javascript: addresses, not one
-        add('warn', 'javascript-url', 'javascript: URL', `<${lc(el.tagName)}> ${clip(u, 120)}`);
+        add('warn', 'javascript-url', 'javascript: URL', `<${lc(dom.tagName(el))}> ${clip(u, 120)}`);
     });
     // Browsers (Chrome 88+, Firefox 79+, Safari 12.1+) give target=_blank links noopener by default,
     // so a missing rel=noopener on _blank is no longer a finding. The opener is still exposed to a
@@ -2049,8 +2106,8 @@
     document.querySelectorAll('a[target][href]').forEach((a) => {
       const dest = safe(() => new URL(a.href, location.href));
       if (!dest || !/^https?:$/.test(dest.protocol) || dest.origin === location.origin) return;
-      const rel = (a.getAttribute('rel') || '').toLowerCase().split(/\s+/);
-      const target = (a.getAttribute('target') || '').toLowerCase();
+      const rel = (dom.getAttribute(a, 'rel') || '').toLowerCase().split(/\s+/);
+      const target = (dom.getAttribute(a, 'target') || '').toLowerCase();
       if (rel.includes('noopener') || rel.includes('noreferrer')) return;
       if (rel.includes('opener') && target !== '_self' && target !== '_parent' && target !== '_top')
         add('warn', 'opener-exposed', 'rel=opener gives the linked page window.opener', clip(a.href, 100));
@@ -2059,7 +2116,7 @@
     });
     let inl = 0;
     document.querySelectorAll('*').forEach((el) => {
-      for (const a of el.attributes) if (/^on/i.test(a.name)) inl++;
+      for (const a of dom.attributes(el)) if (/^on/i.test(a.name)) inl++;
     });
     if (inl)
       add(
@@ -2069,9 +2126,9 @@
         'Prevents a strict CSP without unsafe-inline.'
       );
     document.querySelectorAll('form').forEach((f) => {
-      if (f.querySelector('input[type=password]') && (f.action || '').startsWith('http://'))
-        add('error', 'password-http', 'Password form posts over HTTP', f.action);
-      if (f.querySelector('input[type=password]') && f.autocomplete === 'off')
+      if (dom.querySelector(f, 'input[type=password]') && (dom.formAction(f) || '').startsWith('http://'))
+        add('error', 'password-http', 'Password form posts over HTTP', dom.formAction(f));
+      if (dom.querySelector(f, 'input[type=password]') && dom.formAutocomplete(f) === 'off')
         add('info', 'autocomplete-off', 'Password form disables autocomplete');
     });
     const ext = new Set();
@@ -2085,7 +2142,7 @@
     });
     document.querySelectorAll('iframe').forEach((f) => {
       if (
-        !f.hasAttribute('sandbox') &&
+        !dom.hasAttribute(f, 'sandbox') &&
         safe(() => new URL(f.src).origin !== location.origin, false)
       )
         add('info', 'iframe-sandbox', 'Cross-origin iframe without sandbox', clip(f.src, 100));
@@ -2093,7 +2150,7 @@
     const secretRe =
       /(api[_-]?key|secret|token|passwd|password)\s*[:=]\s*['"][A-Za-z0-9_-]{16,}['"]/i;
     document.querySelectorAll('script:not([src])').forEach((s) => {
-      const m = (s.textContent || '').match(secretRe);
+      const m = (dom.textContent(s) || '').match(secretRe);
       if (m)
         add(
           'warn',
@@ -2104,7 +2161,7 @@
     });
     const sinks = [];
     document.querySelectorAll('script:not([src])').forEach((s) => {
-      const c = s.textContent || '';
+      const c = dom.textContent(s) || '';
       ['innerHTML', 'document.write', 'eval(', 'outerHTML', 'insertAdjacentHTML'].forEach((k) => {
         if (c.includes(k)) sinks.push(k);
       });
@@ -2144,19 +2201,19 @@
   const deadlyUrl = (v) => /^(javascript|vbscript|data:text\/html)/i.test(String(v).replace(/[\u0000-\u0020\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff]+/g, ''));
   const RAW_TEXT = 'noscript,xmp,iframe,noembed,noframes,plaintext';
   function escapeRawText(root) {
-    root.querySelectorAll(RAW_TEXT).forEach((n) => {
-      for (const c of n.childNodes)
-        if (c.nodeType === 3) c.nodeValue = c.nodeValue.replace(/<\/(noscript|xmp|iframe|noembed|noframes|plaintext|style|script)/gi, '<\\/$1');
+    dom.querySelectorAll(root, RAW_TEXT).forEach((n) => {
+      for (const c of dom.childNodes(n))
+        if (dom.nodeType(c) === 3) c.nodeValue = c.nodeValue.replace(/<\/(noscript|xmp|iframe|noembed|noframes|plaintext|style|script)/gi, '<\\/$1');
     });
   }
   function neutralizeTree(root) {
-    root.querySelectorAll('object,embed,meta[http-equiv]').forEach((n) => {
-      if (n.localName !== 'meta' || /refresh/i.test(n.getAttribute('http-equiv'))) n.remove();
+    dom.querySelectorAll(root, 'object,embed,meta[http-equiv]').forEach((n) => {
+      if (dom.localName(n) !== 'meta' || /refresh/i.test(dom.getAttribute(n, 'http-equiv'))) dom.remove(n);
     });
-    [root, ...root.querySelectorAll('*')].forEach((n) => {
-      for (const a of [...n.attributes]) {
-        if (/^on/i.test(a.name) || /^srcdoc$/i.test(a.name)) n.removeAttribute(a.name);
-        else if (URL_ATTRS.test(a.name) && deadlyUrl(a.value)) n.setAttribute(a.name, '#');
+    [root, ...dom.querySelectorAll(root, '*')].forEach((n) => {
+      for (const a of [...dom.attributes(n)]) {
+        if (/^on/i.test(a.name) || /^srcdoc$/i.test(a.name)) dom.removeAttribute(n, a.name);
+        else if (URL_ATTRS.test(a.name) && deadlyUrl(a.value)) dom.setAttribute(n, a.name, '#');
       }
     });
     escapeRawText(root);
@@ -2186,22 +2243,21 @@
   }
   function absolutizeTree(root) {
     const attrs = ['src', 'href', 'poster', 'data-src', 'action'];
-    const all = [root, ...root.querySelectorAll('*')];
+    const all = [root, ...dom.querySelectorAll(root, '*')];
     for (const n of all) {
       for (const a of attrs) {
-        const v = n.getAttribute && n.getAttribute(a);
+        const v = n.getAttribute && dom.getAttribute(n, a);
         if (v && !SKIP_URL.test(v)) {
           try {
-            n.setAttribute(a, new URL(v, document.baseURI).href);
+            dom.setAttribute(n, a, new URL(v, document.baseURI).href);
           } catch (_) {
             /* an unparseable address is left exactly as the page wrote it */
           }
         }
       }
-      const ss = n.getAttribute && n.getAttribute('srcset');
+      const ss = n.getAttribute && dom.getAttribute(n, 'srcset');
       if (ss)
-        n.setAttribute(
-          'srcset',
+        dom.setAttribute(n, 'srcset',
           ss
             .split(',')
             .map((p) => {
@@ -2212,16 +2268,15 @@
                 return p;
               }
             })
-            .join(', ')
-        );
-      const st = n.getAttribute && n.getAttribute('style');
-      if (st && st.includes('url(')) n.setAttribute('style', absCssUrls(st, document.baseURI));
+            .join(', '));
+      const st = n.getAttribute && dom.getAttribute(n, 'style');
+      if (st && st.includes('url(')) dom.setAttribute(n, 'style', absCssUrls(st, document.baseURI));
     }
   }
   function collectComponent(h, opts) {
     opts = opts || {};
     const el = target(h);
-    const nodes = [el, ...el.querySelectorAll('*')];
+    const nodes = [el, ...dom.querySelectorAll(el, '*')];
     const limited = nodes.slice(0, 3000);
     const ruleSeen = new Set();
     const blocked = [];
@@ -2229,9 +2284,9 @@
     const usedFamilies = new Set();
     const varNames = new Set();
     const allSheetsList = allSheets(
-      el.getRootNode && el.getRootNode().styleSheets ? el.getRootNode() : document
+      el.getRootNode && dom.getRootNode(el).styleSheets ? dom.getRootNode(el) : document
     );
-    if (el.getRootNode() !== document) allSheetsList.push(...allSheets(document));
+    if (dom.getRootNode(el) !== document) allSheetsList.push(...allSheets(document));
     limited.forEach((n) => {
       const cs = getComputedStyle(n);
       if (cs.animationName !== 'none')
@@ -2253,7 +2308,7 @@
               /::?(before|after|placeholder|marker|selection|first-line|first-letter|-webkit-[\w-]+)/g,
               ''
             ) || '*';
-        if (limited.some((n) => safe(() => n.matches(s), false))) return true;
+        if (limited.some((n) => safe(() => dom.matches(n, s), false))) return true;
       }
       return false;
     };
@@ -2321,36 +2376,36 @@
     });
     if (varCss) css = `:root {\n${varCss}}\n\n` + css;
     // clone html, strip our own marks
-    const clone = el.cloneNode(true);
+    const clone = dom.cloneNode(el, true);
     const sweep = (c) => {
       if (c.removeAttribute) {
-        c.removeAttribute('data-df');
+        dom.removeAttribute(c, 'data-df');
       }
-      [...(c.children || [])].forEach(sweep);
+      [...(dom.children(c) || [])].forEach(sweep);
     };
     sweep(clone);
-    clone.querySelectorAll('script').forEach((s) => s.remove());
+    dom.querySelectorAll(clone, 'script').forEach((s) => dom.remove(s));
     absolutizeTree(clone);
-    clone.querySelectorAll('style').forEach((st) => {
-      st.textContent = st.textContent.replace(/</g, '\\3c ');
+    dom.querySelectorAll(clone, 'style').forEach((st) => {
+      st.textContent = dom.textContent(st).replace(/</g, '\\3c ');
     });
     // A second copy with handlers and dangerous addresses removed, for a file meant to be opened to look at.
     let htmlSafe = null;
     if (opts.alsoSafe) {
-      const safeClone = clone.cloneNode(true);
+      const safeClone = dom.cloneNode(clone, true);
       neutralizeTree(safeClone);
       htmlSafe = safeClone.outerHTML;
     }
     if (opts.stripHandlers) neutralizeTree(clone);
     else escapeRawText(clone); // the end-tag break-out works whether or not handlers are kept
     // scripts in page that mention the component's id/classes (inferred relation)
-    const keys = new Set([el.id, ...el.classList].filter(Boolean));
+    const keys = new Set([el.id, ...dom.classList(el)].filter(Boolean));
     nodes.slice(0, 400).forEach((n) => {
       if (n.id) keys.add(n.id);
     });
     const related = [];
     document.querySelectorAll('script:not([src])').forEach((s, i) => {
-      const c = s.textContent || '';
+      const c = dom.textContent(s) || '';
       const hit = [...keys].filter((k) => k.length > 2 && c.includes(k));
       if (hit.length && related.length < 20)
         related.push({
@@ -2376,7 +2431,7 @@
     let htmlShadow = null;
     let htmlShadowSafe = null;
     let shadowCss = '';
-    const hasShadow = nodes.some((n) => n.shadowRoot);
+    const hasShadow = nodes.some((n) => dom.shadowRoot(n));
     if (hasShadow) {
       const inert = document.implementation.createHTMLDocument('');
       let budget = 3000;
@@ -2389,30 +2444,30 @@
       };
       const deep = (n, depth) => {
         if (budget-- <= 0) return null;
-        if (n.nodeType !== 1) return n.nodeType === 3 || n.nodeType === 8 ? inert.importNode(n, false) : null;
-        if (lc(n.tagName) === 'script') return null;
+        if (dom.nodeType(n) !== 1) return dom.nodeType(n) === 3 || dom.nodeType(n) === 8 ? inert.importNode(n, false) : null;
+        if (lc(dom.tagName(n)) === 'script') return null;
         const c = inert.importNode(n, false);
-        c.removeAttribute('data-df');
-        if (n.shadowRoot && depth < 8) {
+        dom.removeAttribute(c, 'data-df');
+        if (dom.shadowRoot(n) && depth < 8) {
           const t = inert.createElement('template');
-          t.setAttribute('shadowrootmode', 'open');
-          for (const k of n.shadowRoot.childNodes) {
+          dom.setAttribute(t, 'shadowrootmode', 'open');
+          for (const k of dom.childNodes(dom.shadowRoot(n))) {
             const kc = deep(k, depth + 1);
             if (kc) t.content.append(kc);
-            if (k.nodeType === 1 && lc(k.tagName) === 'style') shadowCss += '/* shadow root of ' + ((selectorsFor(n)[0] || {}).selector || lc(n.tagName)) + ' */\n' + k.textContent + '\n\n';
+            if (dom.nodeType(k) === 1 && lc(dom.tagName(k)) === 'style') shadowCss += '/* shadow root of ' + ((selectorsFor(n)[0] || {}).selector || lc(dom.tagName(n))) + ' */\n' + dom.textContent(k) + '\n\n';
           }
-          for (const sheet of n.shadowRoot.adoptedStyleSheets || []) {
+          for (const sheet of dom.shadowRoot(n).adoptedStyleSheets || []) {
             const txt = sheetText(sheet);
             if (txt) {
               const st = inert.createElement('style');
               st.textContent = txt;
               t.content.append(st);
-              shadowCss += '/* adopted stylesheet of ' + ((selectorsFor(n)[0] || {}).selector || lc(n.tagName)) + ' */\n' + txt + '\n\n';
+              shadowCss += '/* adopted stylesheet of ' + ((selectorsFor(n)[0] || {}).selector || lc(dom.tagName(n))) + ' */\n' + txt + '\n\n';
             }
           }
           c.append(t);
         }
-        for (const k of n.childNodes) {
+        for (const k of dom.childNodes(n)) {
           const kc = deep(k, depth);
           if (kc) c.append(kc);
         }
@@ -2420,12 +2475,12 @@
       };
       const fixContent = (frag, strip) => {
         const div = frag.ownerDocument.createElement('div');
-        div.append(...frag.childNodes);
+        div.append(...dom.childNodes(frag));
         absolutizeTree(div);
         if (strip) neutralizeTree(div);
         else escapeRawText(div);
-        div.querySelectorAll('template[shadowrootmode]').forEach((t) => fixContent(t.content, strip));
-        frag.append(...div.childNodes);
+        dom.querySelectorAll(div, 'template[shadowrootmode]').forEach((t) => fixContent(t.content, strip));
+        frag.append(...dom.childNodes(div));
       };
       const build = (strip) => {
         budget = 3000;
@@ -2436,7 +2491,7 @@
         absolutizeTree(holder);
         if (strip) neutralizeTree(holder);
         else escapeRawText(holder);
-        holder.querySelectorAll('template[shadowrootmode]').forEach((t) => fixContent(t.content, strip));
+        dom.querySelectorAll(holder, 'template[shadowrootmode]').forEach((t) => fixContent(t.content, strip));
         return holder.innerHTML;
       };
       htmlShadow = build(!!opts.stripHandlers);
@@ -2446,18 +2501,18 @@
     // Where the part sits: the opening tags of its ancestors and its neighbours.
     const attrText = (n) =>
       ['id', 'class', 'role', 'lang', 'dir']
-        .concat([...n.attributes].map((x) => x.name).filter((x) => /^data-(?!df)/.test(x)))
-        .filter((k, i, arr) => arr.indexOf(k) === i && n.hasAttribute(k))
+        .concat([...dom.attributes(n)].map((x) => x.name).filter((x) => /^data-(?!df)/.test(x)))
+        .filter((k, i, arr) => arr.indexOf(k) === i && dom.hasAttribute(n, k))
         .slice(0, 8)
-        .map((k) => k + '="' + clip(n.getAttribute(k), 80).replace(/"/g, '&quot;') + '"')
+        .map((k) => k + '="' + clip(dom.getAttribute(n, k), 80).replace(/"/g, '&quot;') + '"')
         .join(' ');
     const chain = [];
-    for (let p = parentOf(el); p && chain.length < 14; p = parentOf(p)) chain.unshift({ tag: lc(p.tagName), attrs: attrText(p), shadowHost: !el.parentElement && p === parentOf(el) });
+    for (let p = parentOf(el); p && chain.length < 14; p = parentOf(p)) chain.unshift({ tag: lc(dom.tagName(p)), attrs: attrText(p), shadowHost: !dom.parentElement(el) && p === parentOf(el) });
     const context = {
       chain,
-      previous: el.previousElementSibling ? lc(el.previousElementSibling.tagName) + (el.previousElementSibling.id ? '#' + el.previousElementSibling.id : '') : null,
-      next: el.nextElementSibling ? lc(el.nextElementSibling.tagName) + (el.nextElementSibling.id ? '#' + el.nextElementSibling.id : '') : null,
-      siblings: parentOf(el) ? parentOf(el).children.length : 0,
+      previous: dom.previousElementSibling(el) ? lc(dom.tagName(dom.previousElementSibling(el))) + (dom.previousElementSibling(el).id ? '#' + dom.previousElementSibling(el).id : '') : null,
+      next: dom.nextElementSibling(el) ? lc(dom.tagName(dom.nextElementSibling(el))) + (dom.nextElementSibling(el).id ? '#' + dom.nextElementSibling(el).id : '') : null,
+      siblings: parentOf(el) ? dom.children(parentOf(el)).length : 0,
     };
     // Inherited values: for each ancestor, the inheritable properties it sets itself (its value
     // differs from its own parent's), which is where this part's font, colour and so on come from.
@@ -2470,7 +2525,7 @@
         const v = pc.getPropertyValue(prop);
         if (v !== '' && (!up || up.getPropertyValue(prop) !== v)) set[prop] = v;
       });
-      if (Object.keys(set).length) inherited.push({ from: (selectorsFor(p)[0] || {}).selector || lc(p.tagName), tag: lc(p.tagName), set });
+      if (Object.keys(set).length) inherited.push({ from: (selectorsFor(p)[0] || {}).selector || lc(dom.tagName(p)), tag: lc(dom.tagName(p)), set });
     }
     // Generated content (::before / ::after) cannot be seen in the DOM.
     const pseudo = [];
@@ -2478,13 +2533,13 @@
       for (const which of ['::before', '::after']) {
         const pcs = getComputedStyle(n, which);
         if (pcs.content && pcs.content !== 'none' && pcs.content !== 'normal' && pseudo.length < 60)
-          pseudo.push({ element: (selectorsFor(n)[0] || {}).selector || lc(n.tagName), pseudo: which, content: clip(pcs.content, 200), display: pcs.display, color: pcs.color });
+          pseudo.push({ element: (selectorsFor(n)[0] || {}).selector || lc(dom.tagName(n)), pseudo: which, content: clip(pcs.content, 200), display: pcs.display, color: pcs.color });
       }
     }
     // Attributes that frameworks add to markup and that scoped styles may depend on.
     const frameworkAttrs = {};
     for (const n of nodes.slice(0, 1500)) {
-      for (const at of n.attributes) {
+      for (const at of dom.attributes(n)) {
         const m = /^(data-v-[0-9a-f]{6,}|_ngcontent-[\w-]+|_nghost-[\w-]+|ng-version|data-reactroot|data-reactid|data-svelte-h|data-astro-cid-[\w]+|data-server-rendered|data-radix-[\w-]+|data-testid)$/.exec(at.name);
         if (m) frameworkAttrs[m[1]] = (frameworkAttrs[m[1]] || 0) + 1;
       }
@@ -2492,7 +2547,7 @@
     const base = location.href;
     const htmlOut = clone.outerHTML;
     // Computed values of the selected element that differ from the browser's defaults for its tag.
-    const defs = defaultsFor(lc(el.tagName), el.namespaceURI === 'http://www.w3.org/2000/svg' ? 'svg' : 'html');
+    const defs = defaultsFor(lc(dom.tagName(el)), el.namespaceURI === 'http://www.w3.org/2000/svg' ? 'svg' : 'html');
     const computedRoot = {};
     for (let i = 0; i < elCS.length && Object.keys(computedRoot).length < 300; i++) {
       const k = elCS[i];
@@ -2555,16 +2610,16 @@
   // find it. Read-only; nothing here touches the page.
   function elementFacts(h) {
     const el = h === '@page' ? document.documentElement : target(h);
-    const all = [el, ...el.querySelectorAll('*')];
+    const all = [el, ...dom.querySelectorAll(el, '*')];
     const nodes = all.slice(0, 3000);
     const pageCount = document.getElementsByTagName('*').length;
     const isPage = el === document.documentElement || el === document.body || (pageCount > 20 && all.length / pageCount >= 0.9);
     const tagCount = {};
-    for (const n of nodes) tagCount[lc(n.tagName)] = (tagCount[lc(n.tagName)] || 0) + 1;
+    for (const n of nodes) tagCount[lc(dom.tagName(n))] = (tagCount[lc(dom.tagName(n))] || 0) + 1;
     const ownText = (n) =>
-      clip([...n.childNodes].filter((c) => c.nodeType === 3).map((c) => c.nodeValue).join(' ').replace(/\s+/g, ' ').trim(), 60);
+      clip([...dom.childNodes(n)].filter((c) => dom.nodeType(c) === 3).map((c) => c.nodeValue).join(' ').replace(/\s+/g, ' ').trim(), 60);
     const attrs = { data: {}, aria: {}, other: {} };
-    for (const a of el.attributes) {
+    for (const a of dom.attributes(el)) {
       if (/^on/i.test(a.name)) continue;
       const bucket = a.name.startsWith('data-') ? attrs.data : a.name.startsWith('aria-') ? attrs.aria : attrs.other;
       bucket[a.name] = clip(a.value, 200);
@@ -2574,68 +2629,68 @@
       if (outline.length >= 150 || depth > 8) return;
       outline.push({
         depth,
-        tag: lc(n.tagName),
+        tag: lc(dom.tagName(n)),
         id: n.id || '',
-        classes: [...(n.classList || [])].slice(0, 4),
-        role: n.getAttribute('role') || '',
+        classes: [...(dom.classList(n) || [])].slice(0, 4),
+        role: dom.getAttribute(n, 'role') || '',
         text: ownText(n),
       });
-      for (const c of n.children) walk(c, depth + 1);
+      for (const c of dom.children(n)) walk(c, depth + 1);
     };
     walk(el, 0);
     const nameOf = (f) => {
       const id = f.id && safe(() => document.querySelector('label[for="' + CSS.escape(f.id) + '"]'));
-      const wrap = f.closest && f.closest('label');
+      const wrap = f.closest && dom.closest(f, 'label');
       const l = id || wrap;
-      return clip(f.getAttribute('aria-label') || (l && l.textContent.trim().replace(/\s+/g, ' ')) || f.getAttribute('placeholder') || '', 60);
+      return clip(dom.getAttribute(f, 'aria-label') || (l && dom.textContent(l).trim().replace(/\s+/g, ' ')) || dom.getAttribute(f, 'placeholder') || '', 60);
     };
-    const forms = [...(lc(el.tagName) === 'form' ? [el] : []), ...el.querySelectorAll('form')].slice(0, 20).map((f) => ({
-      action: safe(() => new URL(f.getAttribute('action') || '', document.baseURI).href, f.getAttribute('action') || ''),
-      method: lc(f.getAttribute('method') || 'get'),
-      fields: [...f.elements]
+    const forms = [...(lc(dom.tagName(el)) === 'form' ? [el] : []), ...dom.querySelectorAll(el, 'form')].slice(0, 20).map((f) => ({
+      action: safe(() => new URL(dom.getAttribute(f, 'action') || '', document.baseURI).href, dom.getAttribute(f, 'action') || ''),
+      method: lc(dom.getAttribute(f, 'method') || 'get'),
+      fields: [...dom.formElements(f)]
         .filter((x) => x.name || x.id)
         .slice(0, 40)
-        .map((x) => ({ tag: lc(x.tagName), type: x.type || '', name: x.name || x.id, required: !!x.required, label: nameOf(x) })),
+        .map((x) => ({ tag: lc(dom.tagName(x)), type: x.type || '', name: x.name || x.id, required: !!x.required, label: nameOf(x) })),
     }));
-    const links = [...el.querySelectorAll('a[href]')].slice(0, 100).map((a) => ({
-      text: clip((a.textContent || a.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' '), 60),
-      href: safe(() => new URL(a.getAttribute('href'), document.baseURI).href, a.getAttribute('href')),
+    const links = [...dom.querySelectorAll(el, 'a[href]')].slice(0, 100).map((a) => ({
+      text: clip((dom.textContent(a) || dom.getAttribute(a, 'aria-label') || '').trim().replace(/\s+/g, ' '), 60),
+      href: safe(() => new URL(dom.getAttribute(a, 'href'), document.baseURI).href, dom.getAttribute(a, 'href')),
     }));
-    const images = [...el.querySelectorAll('img')].slice(0, 60).map((i) => ({
+    const images = [...dom.querySelectorAll(el, 'img')].slice(0, 60).map((i) => ({
       src: i.currentSrc || i.src || '',
-      alt: i.getAttribute('alt'),
+      alt: dom.getAttribute(i, 'alt'),
       width: i.naturalWidth || i.width || 0,
       height: i.naturalHeight || i.height || 0,
     }));
-    const svgRoots = [...(lc(el.tagName) === 'svg' ? [el] : []), ...[...el.querySelectorAll('svg')].filter((s) => !s.parentElement || !s.parentElement.closest('svg'))].slice(0, 30);
+    const svgRoots = [...(lc(dom.tagName(el)) === 'svg' ? [el] : []), ...[...dom.querySelectorAll(el, 'svg')].filter((s) => !dom.parentElement(s) || !dom.closest(dom.parentElement(s), 'svg'))].slice(0, 30);
     const svgs = svgRoots.map((s) => {
-      const c = s.cloneNode(true);
-      c.querySelectorAll('script').forEach((x) => x.remove());
+      const c = dom.cloneNode(s, true);
+      dom.querySelectorAll(c, 'script').forEach((x) => dom.remove(x));
       neutralizeTree(c);
-      return { label: s.getAttribute('aria-label') || s.getAttribute('class') || s.id || '', markup: clip(c.outerHTML, 60000) };
+      return { label: dom.getAttribute(s, 'aria-label') || dom.getAttribute(s, 'class') || s.id || '', markup: clip(c.outerHTML, 60000) };
     });
-    const jsonLd = [...el.querySelectorAll('script[type="application/ld+json"]')].slice(0, 10).map((x) => clip(x.textContent || '', 40000));
+    const jsonLd = [...dom.querySelectorAll(el, 'script[type="application/ld+json"]')].slice(0, 10).map((x) => clip(dom.textContent(x) || '', 40000));
     const idSet = new Set();
     const classCount = new Map();
     const dataAttrs = new Set();
     const customTags = new Set();
     for (const n of nodes.slice(0, 1500)) {
       if (n.id) idSet.add(n.id);
-      for (const c of n.classList || []) classCount.set(c, (classCount.get(c) || 0) + 1);
-      for (const a of n.attributes) if (a.name.startsWith('data-') && !/^data-df/.test(a.name)) dataAttrs.add(a.name);
-      if (n.tagName.includes('-')) customTags.add(lc(n.tagName));
+      for (const c of dom.classList(n) || []) classCount.set(c, (classCount.get(c) || 0) + 1);
+      for (const a of dom.attributes(n)) if (a.name.startsWith('data-') && !/^data-df/.test(a.name)) dataAttrs.add(a.name);
+      if (dom.tagName(n).includes('-')) customTags.add(lc(dom.tagName(n)));
     }
-    const r = el.getBoundingClientRect();
+    const r = dom.getBoundingClientRect(el);
     const cs = getComputedStyle(el);
     const ancestors = [];
-    for (let p = el.parentElement; p && ancestors.length < 6; p = p.parentElement)
-      ancestors.push({ tag: lc(p.tagName), id: p.id || '', classes: [...p.classList].slice(0, 3) });
+    for (let p = dom.parentElement(el); p && ancestors.length < 6; p = dom.parentElement(p))
+      ancestors.push({ tag: lc(dom.tagName(p)), id: p.id || '', classes: [...dom.classList(p)].slice(0, 3) });
     return {
-      tag: lc(el.tagName),
+      tag: lc(dom.tagName(el)),
       id: el.id || '',
-      classes: [...el.classList],
-      selector: (selectorsFor(el)[0] || {}).selector || lc(el.tagName),
-      role: el.getAttribute('role') || '',
+      classes: [...dom.classList(el)],
+      selector: (selectorsFor(el)[0] || {}).selector || lc(dom.tagName(el)),
+      role: dom.getAttribute(el, 'role') || '',
       isWholePage: isPage,
       share: Math.round((all.length / Math.max(pageCount, 1)) * 1000) / 1000,
       elementCount: all.length,
@@ -2643,14 +2698,14 @@
       tagCount,
       attributes: attrs,
       outline,
-      headings: [...el.querySelectorAll('h1,h2,h3,h4,h5,h6')].slice(0, 30).map((x) => ({ level: +x.tagName[1], text: clip(x.textContent.trim().replace(/\s+/g, ' '), 80) })),
+      headings: [...dom.querySelectorAll(el, 'h1,h2,h3,h4,h5,h6')].slice(0, 30).map((x) => ({ level: +dom.tagName(x)[1], text: clip(dom.textContent(x).trim().replace(/\s+/g, ' '), 80) })),
       forms,
       links,
       images,
       svgs,
       jsonLd,
-      microdata: [...new Set([...el.querySelectorAll('[itemtype]')].map((x) => x.getAttribute('itemtype')))].slice(0, 20),
-      text: clip((el.innerText || el.textContent || '').trim(), 20000),
+      microdata: [...new Set([...dom.querySelectorAll(el, '[itemtype]')].map((x) => dom.getAttribute(x, 'itemtype')))].slice(0, 20),
+      text: clip((el.innerText || dom.textContent(el) || '').trim(), 20000),
       box: { width: Math.round(r.width), height: Math.round(r.height), pageX: Math.round(r.x + scrollX), pageY: Math.round(r.y + scrollY) },
       display: cs.display,
       position: cs.position,
@@ -2661,8 +2716,8 @@
         dataAttrs: [...dataAttrs].slice(0, 60),
         customTags: [...customTags],
       },
-      shadowRoot: !!el.shadowRoot,
-      inShadow: !!(el.getRootNode && el.getRootNode().host),
+      shadowRoot: !!dom.shadowRoot(el),
+      inShadow: !!(el.getRootNode && dom.getRootNode(el).host),
       pageTitle: document.title,
       pageUrl: location.href,
       lang: document.documentElement.lang || '',
@@ -2684,7 +2739,7 @@
     if (!defaultsFrame) {
       defaultsFrame = document.createElement('iframe');
       defaultsFrame.id = '__df_defaults';
-      defaultsFrame.setAttribute('sandbox', 'allow-same-origin');
+      dom.setAttribute(defaultsFrame, 'sandbox', 'allow-same-origin');
       defaultsFrame.style.cssText =
         'position:fixed;left:-99999px;width:1200px;height:800px;visibility:hidden;border:0';
       document.documentElement.appendChild(defaultsFrame);
@@ -2699,7 +2754,7 @@
     const cs = defaultsFrame.contentWindow.getComputedStyle(e);
     const o = {};
     for (let i = 0; i < cs.length; i++) o[cs[i]] = cs.getPropertyValue(cs[i]);
-    e.remove();
+    dom.remove(e);
     defaultCache.set(key, o);
     return o;
   }
@@ -2828,7 +2883,7 @@
       // Hard cap: computed-style diffing is expensive and a huge subtree (say <body>) would
       // otherwise freeze the page for seconds.
       if (nodes.length >= 2500) return null;
-      const tag = lc(el.tagName);
+      const tag = lc(dom.tagName(el));
       if (/^(script|style|link|meta|noscript|template)$/.test(tag)) return null;
       nodes.push(el);
       const ns = el instanceof SVGElement ? 'svg' : 'html';
@@ -2849,7 +2904,7 @@
       Object.assign(declared, an.finalVals);
       an.anims.forEach((n) => keyframeNames.add(n));
       if (opts.pin === 'all' && ns === 'html' && cs.display !== 'inline' && cs.display !== 'none') {
-        const rr = el.getBoundingClientRect();
+        const rr = dom.getBoundingClientRect(el);
         declared.width = Math.round(rr.width * 100) / 100 + 'px';
         declared.height = Math.round(rr.height * 100) / 100 + 'px';
         declared['box-sizing'] = 'border-box';
@@ -2860,7 +2915,7 @@
         parentSnap[p] = cs.getPropertyValue(p);
       });
       const attrs = {};
-      for (const a of el.attributes) {
+      for (const a of dom.attributes(el)) {
         if (/^(class|style|id|data-df.*)$/.test(a.name) || /^on/i.test(a.name) || /^(srcdoc|formaction)$/i.test(a.name)) continue;
         attrs[a.name] = URL_ATTRS.test(a.name) && deadlyUrl(a.value) ? '#' : a.value;
       }
@@ -2901,18 +2956,18 @@
           node.pseudo[p] = o;
         }
       }
-      for (const c of el.childNodes) {
-        if (c.nodeType === 3) {
-          if (c.textContent.length) node.children.push({ text: c.textContent });
-        } else if (c.nodeType === 1) {
+      for (const c of dom.childNodes(el)) {
+        if (dom.nodeType(c) === 3) {
+          if (dom.textContent(c).length) dom.children(node).push({ text: dom.textContent(c) });
+        } else if (dom.nodeType(c) === 1) {
           const k = walker(c, parentSnap);
-          if (k) node.children.push(k);
+          if (k) dom.children(node).push(k);
         }
       }
-      if (el.shadowRoot)
-        for (const c of el.shadowRoot.children) {
+      if (dom.shadowRoot(el))
+        for (const c of dom.children(dom.shadowRoot(el))) {
           const k = walker(c, parentSnap);
-          if (k) node.children.push(k);
+          if (k) dom.children(node).push(k);
         }
       return node;
     };
@@ -2925,7 +2980,7 @@
       )
       .join('\n');
     // root needs width constraints
-    const r = root.getBoundingClientRect();
+    const r = dom.getBoundingClientRect(root);
     if (!rootNode) throw new Error('This element cannot be recreated (script, style, link, meta, noscript and template are skipped). Select a visible element.');
     rootNode.style.width = getComputedStyle(root).width; // used content width, consistent with the carried box-sizing
     // assign class names
@@ -2945,7 +3000,7 @@
           });
         n.cls = uniq.get(key).cls;
       }
-      n.children.forEach(classify);
+      dom.children(n).forEach(classify);
     };
     classify(rootNode);
     const rulesCss = [...uniq.values()]
@@ -2976,7 +3031,7 @@
     };
   }
   function countTree(n) {
-    return n.text != null ? 0 : 1 + n.children.reduce((a, c) => a + countTree(c), 0);
+    return n.text != null ? 0 : 1 + dom.children(n).reduce((a, c) => a + countTree(c), 0);
   }
 
   /* Layout comparison: render generated doc in a hidden iframe, compare per-element boxes and key styles */
@@ -2984,8 +3039,8 @@
     const orig = target(h);
     const f = document.createElement('iframe');
     f.id = '__df_compare';
-    f.setAttribute('sandbox', 'allow-same-origin'); // no allow-scripts: generated markup can never execute in the page's origin
-    const r = orig.getBoundingClientRect();
+    dom.setAttribute(f, 'sandbox', 'allow-same-origin'); // no allow-scripts: generated markup can never execute in the page's origin
+    const r = dom.getBoundingClientRect(orig);
     f.style.cssText = `position:fixed;left:-99999px;top:0;width:${Math.max(400, Math.ceil(r.width) + 40)}px;height:${Math.max(400, Math.ceil(r.height) + 40)}px;border:0;visibility:hidden`;
     document.documentElement.appendChild(f);
     try {
@@ -2996,17 +3051,17 @@
       });
       await new Promise((res) => setTimeout(res, 300));
       const d = f.contentDocument;
-      const root = d.querySelector('[data-df-root]') || d.body.firstElementChild;
+      const root = dom.querySelector(d, '[data-df-root]') || dom.firstElementChild(d.body);
       if (!root) throw new Error('Generated document has no root element to compare.');
-      const a = [orig, ...orig.querySelectorAll('*')].filter(
-        (e) => !/^(script|style|link|meta|noscript|template)$/i.test(e.tagName)
+      const a = [orig, ...dom.querySelectorAll(orig, '*')].filter(
+        (e) => !/^(script|style|link|meta|noscript|template)$/i.test(dom.tagName(e))
       );
-      const b = [root, ...root.querySelectorAll('*')].filter(
-        (e) => !/^(script|style|link|meta|noscript|template)$/i.test(e.tagName)
+      const b = [root, ...dom.querySelectorAll(root, '*')].filter(
+        (e) => !/^(script|style|link|meta|noscript|template)$/i.test(dom.tagName(e))
       );
       const n = Math.min(a.length, b.length);
-      const orR = orig.getBoundingClientRect(),
-        nwR = root.getBoundingClientRect();
+      const orR = dom.getBoundingClientRect(orig),
+        nwR = dom.getBoundingClientRect(root);
       let posOk = 0,
         sizeOk = 0,
         styleOk = 0,
@@ -3030,9 +3085,9 @@
       for (let i = 0; i < n; i++) {
         const A = a[i],
           B = b[i];
-        if (A.tagName === B.tagName) tagOk++;
-        const ra = A.getBoundingClientRect(),
-          rb = B.getBoundingClientRect();
+        if (dom.tagName(A) === dom.tagName(B)) tagOk++;
+        const ra = dom.getBoundingClientRect(A),
+          rb = dom.getBoundingClientRect(B);
         const dx = Math.abs(ra.left - orR.left - (rb.left - nwR.left)),
           dy = Math.abs(ra.top - orR.top - (rb.top - nwR.top));
         const dw = Math.abs(ra.width - rb.width),
@@ -3041,7 +3096,7 @@
         else if (diffs.length < 25)
           diffs.push({
             kind: 'position',
-            el: lc(A.tagName) + (A.id ? '#' + A.id : ''),
+            el: lc(dom.tagName(A)) + (A.id ? '#' + A.id : ''),
             original: [Math.round(ra.left - orR.left), Math.round(ra.top - orR.top)],
             recreated: [Math.round(rb.left - nwR.left), Math.round(rb.top - nwR.top)],
           });
@@ -3049,7 +3104,7 @@
         else if (diffs.length < 25)
           diffs.push({
             kind: 'size',
-            el: lc(A.tagName) + (A.id ? '#' + A.id : ''),
+            el: lc(dom.tagName(A)) + (A.id ? '#' + A.id : ''),
             original: [Math.round(ra.width), Math.round(ra.height)],
             recreated: [Math.round(rb.width), Math.round(rb.height)],
           });
@@ -3088,7 +3143,7 @@
             else if (diffs.length < 25 && p !== 'font-family')
               diffs.push({
                 kind: 'style:' + p,
-                el: lc(A.tagName),
+                el: lc(dom.tagName(A)),
                 original: sa.getPropertyValue(p),
                 recreated: sb.getPropertyValue(p),
               });
@@ -3121,7 +3176,7 @@
         'Layout similarity: share of elements with matching tag order, position (±2px), size (±2px) and 12 key computed styles. It is not a pixel diff.';
       return result;
     } finally {
-      f.remove();
+      dom.remove(f);
     }
   }
 
@@ -3129,31 +3184,31 @@
   function extractData(kind, h) {
     const root = h ? target(h) : document;
     if (kind === 'links')
-      return [...root.querySelectorAll('a[href]')].slice(0, 5000).map((a) => ({
-        text: clip(a.textContent.trim().replace(/\s+/g, ' '), 120),
-        href: absUrl(a.getAttribute('href')),
+      return [...dom.querySelectorAll(root, 'a[href]')].slice(0, 5000).map((a) => ({
+        text: clip(dom.textContent(a).trim().replace(/\s+/g, ' '), 120),
+        href: absUrl(dom.getAttribute(a, 'href')),
         rel: a.rel || '',
       }));
     if (kind === 'images')
-      return [...root.querySelectorAll('img')].slice(0, 3000).map((i) => ({
+      return [...dom.querySelectorAll(root, 'img')].slice(0, 3000).map((i) => ({
         src: i.currentSrc || i.src,
         alt: i.alt,
         width: i.naturalWidth,
         height: i.naturalHeight,
       }));
     if (kind === 'tables')
-      return [...root.querySelectorAll('table')].slice(0, 100).map((t, ti) => ({
+      return [...dom.querySelectorAll(root, 'table')].slice(0, 100).map((t, ti) => ({
         index: ti,
         rows: [...t.rows]
           .slice(0, 2000)
-          .map((r) => [...r.cells].map((c) => c.textContent.trim().replace(/\s+/g, ' '))),
+          .map((r) => [...r.cells].map((c) => dom.textContent(c).trim().replace(/\s+/g, ' '))),
       }));
     if (kind === 'forms')
-      return [...root.querySelectorAll('form')].map((f) => ({
-        action: f.getAttribute('action'),
-        method: f.method,
-        fields: [...f.elements].map((e) => ({
-          tag: lc(e.tagName),
+      return [...dom.querySelectorAll(root, 'form')].map((f) => ({
+        action: dom.getAttribute(f, 'action'),
+        method: dom.formMethod(f),
+        fields: [...dom.formElements(f)].map((e) => ({
+          tag: lc(dom.tagName(e)),
           type: e.type,
           name: e.name,
           id: e.id,
@@ -3162,19 +3217,19 @@
         })),
       }));
     if (kind === 'headings')
-      return [...root.querySelectorAll('h1,h2,h3,h4,h5,h6')].map((x) => ({
-        level: +x.tagName[1],
-        text: x.textContent.trim(),
+      return [...dom.querySelectorAll(root, 'h1,h2,h3,h4,h5,h6')].map((x) => ({
+        level: +dom.tagName(x)[1],
+        text: dom.textContent(x).trim(),
       }));
     if (kind === 'metadata') {
       const m = {};
       document.querySelectorAll('meta').forEach((x) => {
         const k =
-          x.getAttribute('name') || x.getAttribute('property') || x.getAttribute('http-equiv');
+          dom.getAttribute(x, 'name') || dom.getAttribute(x, 'property') || dom.getAttribute(x, 'http-equiv');
         if (k) m[k] = x.content;
       });
       const ld = [...document.querySelectorAll('script[type="application/ld+json"]')].map((s) =>
-        safe(() => JSON.parse(s.textContent), { error: 'invalid JSON-LD' })
+        safe(() => JSON.parse(dom.textContent(s)), { error: 'invalid JSON-LD' })
       );
       return {
         title: document.title,
@@ -3192,16 +3247,16 @@
     // find parent with >=3 children sharing tag+class signature; extract text/links/images per child
     const best = { score: 0, parent: null, sig: null };
     const scope = root.querySelectorAll ? root : document;
-    const els = [...scope.querySelectorAll('*')].slice(0, 6000);
+    const els = [...dom.querySelectorAll(scope, '*')].slice(0, 6000);
     for (const p of els) {
-      if (p.children.length < 3) continue;
+      if (dom.children(p).length < 3) continue;
       const groups = {};
-      for (const c of p.children) {
-        const sig = lc(c.tagName) + '.' + [...c.classList].sort().join('.');
+      for (const c of dom.children(p)) {
+        const sig = lc(dom.tagName(c)) + '.' + [...dom.classList(c)].sort().join('.');
         (groups[sig] = groups[sig] || []).push(c);
       }
       for (const [sig, list] of Object.entries(groups)) {
-        const score = list.length * Math.min(5, 1 + (list[0].textContent.length > 20));
+        const score = list.length * Math.min(5, 1 + (dom.textContent(list[0]).length > 20));
         if (list.length >= 3 && score > best.score) {
           best.score = score;
           best.parent = p;
@@ -3213,10 +3268,10 @@
     if (!best.parent)
       return { found: false, rows: [], note: 'No repeated sibling structure (3+ items) found.' };
     const rows = best.list.slice(0, 1000).map((c) => ({
-      text: clip(c.textContent.trim().replace(/\s+/g, ' '), 300),
-      link: (c.querySelector('a[href]') || {}).href || null,
-      image: (c.querySelector('img') || {}).currentSrc || null,
-      heading: ((c.querySelector('h1,h2,h3,h4,h5,h6') || {}).textContent || '').trim() || null,
+      text: clip(dom.textContent(c).trim().replace(/\s+/g, ' '), 300),
+      link: (dom.querySelector(c, 'a[href]') || {}).href || null,
+      image: (dom.querySelector(c, 'img') || {}).currentSrc || null,
+      heading: (dom.textContent(dom.querySelector(c, 'h1,h2,h3,h4,h5,h6') || {}) || '').trim() || null,
     }));
     return {
       found: true,
@@ -3339,7 +3394,7 @@
       title: doc.title,
       doctype: doc.doctype ? doc.doctype.name : null,
       domCount: doc.getElementsByTagName('*').length,
-      iframes: [...doc.querySelectorAll('iframe')].map((f) => {
+      iframes: [...dom.querySelectorAll(doc, 'iframe')].map((f) => {
         let ok = false;
         try {
           ok = !!f.contentDocument;
@@ -3358,18 +3413,17 @@
     let n = 0,
       i = 0;
     const w = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_ELEMENT);
-    while (w.nextNode() && i++ < MAX_NODES) if (w.currentNode.shadowRoot) n++;
+    while (w.nextNode() && i++ < MAX_NODES) if (dom.shadowRoot(w.currentNode)) n++;
     return n;
   }
 
   function fullDom(keepScripts) {
-    const clone = document.documentElement.cloneNode(true);
+    const clone = dom.cloneNode(document.documentElement, true);
     // Everything DevForge adds to the page uses an "__df_" id prefix.
-    clone
-      .querySelectorAll('[id^="__df_"]' + (keepScripts ? '' : ',script'))
-      .forEach((n) => n.remove());
-    clone.querySelectorAll('style').forEach((st) => {
-      st.textContent = st.textContent.replace(/<\/style/gi, '\\3c /style');
+    dom.querySelectorAll(clone, '[id^="__df_"]' + (keepScripts ? '' : ',script'))
+      .forEach((n) => dom.remove(n));
+    dom.querySelectorAll(clone, 'style').forEach((st) => {
+      st.textContent = dom.textContent(st).replace(/<\/style/gi, '\\3c /style');
     });
     // Without scripts the saved file should hold no active content at all; with scripts kept the
     // user asked for the page as it is, but raw-text end tags are still broken up.
@@ -3387,14 +3441,14 @@
       let n = 0;
       while (w.nextNode() && n++ < MAX_NODES && overflowing.length < 25) {
         const el = w.currentNode;
-        const r = el.getBoundingClientRect();
+        const r = dom.getBoundingClientRect(el);
         if (r.right > cw + 1 && r.width > 0)
           overflowing.push({
             h: handleOf(el),
             el:
-              lc(el.tagName) +
+              lc(dom.tagName(el)) +
               (el.id ? '#' + el.id : '') +
-              (el.classList[0] ? '.' + el.classList[0] : ''),
+              (dom.classList(el)[0] ? '.' + dom.classList(el)[0] : ''),
             right: Math.round(r.right),
             width: Math.round(r.width),
           });
@@ -3438,8 +3492,8 @@
   // codes, card numbers, and fields whose name suggests a secret.
   const secretField = (el) =>
     /^(password|hidden)$/i.test(el.type || '') ||
-    /(^|\s)(cc-|one-time-code|new-password|current-password)/i.test(el.getAttribute('autocomplete') || '') ||
-    /(pass|pwd|secret|token|otp|cvv|cvc|card|ssn|iban|api.?key)/i.test((el.getAttribute('name') || '') + ' ' + (el.id || ''));
+    /(^|\s)(cc-|one-time-code|new-password|current-password)/i.test(dom.getAttribute(el, 'autocomplete') || '') ||
+    /(pass|pwd|secret|token|otp|cvv|cvc|card|ssn|iban|api.?key)/i.test((dom.getAttribute(el, 'name') || '') + ' ' + (el.id || ''));
   const recHandler = (e) => {
     // Only real user input is recorded; a page script could otherwise plant steps with its own
     // selectors and values.
@@ -3454,7 +3508,7 @@
     };
     if (e.type === 'click') step.action = 'click';
     else if (e.type === 'change' || e.type === 'input') {
-      if (e.type === 'input' && !/^(INPUT|TEXTAREA)$/.test(el.tagName)) return;
+      if (e.type === 'input' && !/^(INPUT|TEXTAREA)$/.test(dom.tagName(el))) return;
       step.action = 'type';
       const secret = secretField(el);
       step.value = secret ? '' : el.value;
@@ -3568,8 +3622,8 @@
           setValue(el, s.value || '');
         } else if (s.action === 'extract') {
           data[s.name || 'step' + i] = s.attr
-            ? el.getAttribute(s.attr)
-            : el.textContent.trim().replace(/\s+/g, ' ');
+            ? dom.getAttribute(el, s.attr)
+            : dom.textContent(el).trim().replace(/\s+/g, ' ');
         } else throw new Error('Unknown action ' + s.action);
         log.push({ i, ok: true, action: s.action, selector: s.selector });
         await sleep(Math.min(Math.max(+s.delay || 80, 0), 30000));
@@ -3664,7 +3718,7 @@
     document
       .querySelectorAll('img,source,video,audio,track,embed,object,iframe,frame,input[type=image]')
       .forEach((n) => {
-        const t = lc(n.tagName);
+        const t = lc(dom.tagName(n));
         const k =
           t === 'iframe' || t === 'frame'
             ? 'html'
@@ -3673,17 +3727,17 @@
               : t === 'video' ||
                   t === 'audio' ||
                   (t === 'source' &&
-                    n.parentElement &&
-                    /^(video|audio)$/i.test(n.parentElement.tagName))
+                    dom.parentElement(n) &&
+                    /^(video|audio)$/i.test(dom.tagName(dom.parentElement(n))))
                 ? 'media'
                 : t === 'object' || t === 'embed'
                   ? null
                   : 'image';
         ['src', 'data', 'poster', 'data-src'].forEach((a) => {
-          const v = n.getAttribute(a);
+          const v = dom.getAttribute(n, a);
           if (v) add(v, a === 'poster' ? 'image' : k, t + '[' + a + ']');
         });
-        const ss = n.getAttribute('srcset') || n.getAttribute('data-srcset');
+        const ss = dom.getAttribute(n, 'srcset') || dom.getAttribute(n, 'data-srcset');
         if (ss)
           ss.split(',').forEach((p) => {
             const u = p.trim().split(/\s+/)[0];
@@ -3691,11 +3745,11 @@
           });
       });
     document.querySelectorAll('use[href],use[xlink\\:href]').forEach((n) => {
-      const v = n.getAttribute('href') || n.getAttribute('xlink:href');
+      const v = dom.getAttribute(n, 'href') || dom.getAttribute(n, 'xlink:href');
       if (v && !v.startsWith('#')) add(v.split('#')[0], 'image', 'svg use');
     });
     document.querySelectorAll('[style*="url("]').forEach((n) => {
-      cssUrls(n.getAttribute('style'), 50).forEach((m) => add(m.value, null, 'style attr'));
+      cssUrls(dom.getAttribute(n, 'style'), 50).forEach((m) => add(m.value, null, 'style attr'));
     });
     const unreadable = [];
     for (const sheet of allSheets(document)) {
@@ -3743,8 +3797,8 @@
     // Caps on how much inline code one call returns; "truncated" tells the panel when they apply.
     let inlineBudget = 20 * 1024 * 1024;
     document.querySelectorAll('script:not([src])').forEach((s, i) => {
-      const t = s.textContent || '';
-      if (t.trim() && s.id !== '__df_bridge' && inlineScripts.length < 500 && inlineBudget > 0) {
+      const t = dom.textContent(s) || '';
+      if (t.trim() && inlineScripts.length < 500 && inlineBudget > 0) {
         inlineBudget -= Math.min(t.length, 2e6);
         inlineScripts.push({
           index: i,
@@ -3756,7 +3810,7 @@
     });
     document.querySelectorAll('style').forEach((s, i) => {
       if (s.id === '__df_overrides') return;
-      const t = s.textContent || '';
+      const t = dom.textContent(s) || '';
       if (t.trim()) inlineStyles.push({ index: i, css: t.length > 2e6 ? t.slice(0, 2e6) : t });
     });
     return {
@@ -3821,7 +3875,7 @@
   function rectOf(h) {
     const el = target(h);
     el.scrollIntoView({ block: 'center', inline: 'center' });
-    const r = el.getBoundingClientRect();
+    const r = dom.getBoundingClientRect(el);
     return {
       x: r.x,
       y: r.y,
@@ -3896,7 +3950,7 @@
         '*:not(#__df_overlay_host){outline:1px solid rgba(255,0,110,.45)!important;outline-offset:-1px!important}' +
         '*:not(#__df_overlay_host):hover{outline-color:rgba(0,180,255,.9)!important}';
       document.documentElement.appendChild(st);
-    } else if (!on && st) st.remove();
+    } else if (!on && st) dom.remove(st);
     return { on: !!document.getElementById('__df_xray') };
   }
 
@@ -3914,23 +3968,24 @@
     prov,
     lc,
     isEl,
+    dom,
     parentOf,
     allSheets,
     MAX_NODES,
     label: (el) =>
       isEl(el)
-        ? lc(el.tagName) +
+        ? lc(dom.tagName(el)) +
           (el.id ? '#' + el.id : '') +
-          (el.classList && el.classList.length ? '.' + [...el.classList].slice(0, 2).join('.') : '')
-        : el && el.nodeType === 3
+          (dom.classList(el) && dom.classList(el).length ? '.' + [...dom.classList(el)].slice(0, 2).join('.') : '')
+        : el && dom.nodeType(el) === 3
           ? '#text'
-          : String(el && el.nodeName),
+          : String(el && dom.nodeName(el)),
     onDestroy: (fn) => destroyHooks.push(fn),
   };
   // Our own nodes should never show up in audits, mutation logs or exports.
   kit.isOwn = (n) => {
-    const el = isEl(n) ? n : n && n.parentElement;
-    return !!(el && el.closest && el.closest('[id^="__df_"]'));
+    const el = isEl(n) ? n : n && dom.parentElement(n);
+    return !!(el && el.closest && dom.closest(el, '[id^="__df_"]'));
   };
 
   // Exposed API
@@ -4011,9 +4066,9 @@
       window.removeEventListener('scroll', onViewportChange, true);
       window.removeEventListener('resize', onViewportChange);
       document.removeEventListener('contextmenu', onContextMenu, true);
-      if (state.overlay) state.overlay.remove();
-      if (state.styleEl) state.styleEl.remove();
-      if (defaultsFrame) defaultsFrame.remove();
+      if (state.overlay) dom.remove(state.overlay);
+      if (state.styleEl) dom.remove(state.styleEl);
+      if (defaultsFrame) dom.remove(defaultsFrame);
       delete window.__DF;
       return { ok: true };
     },

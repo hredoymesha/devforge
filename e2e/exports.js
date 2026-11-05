@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { startFixtures } = require('./fixtures.js');
+const { startFixtures, FAKE } = require('./fixtures.js');
 
 function loadPlaywright() {
   for (const id of ['playwright', process.env.PLAYWRIGHT_MODULE, '/opt/node-tools/node_modules/playwright']) {
@@ -58,6 +58,11 @@ async function openPanel(env, targetUrl) {
     if (tabId == null) await new Promise((r) => setTimeout(r, 150));
   }
   const panel = await env.ctx.newPage();
+  // Trusted Types: the panel's CSP refuses plain strings at HTML sinks. Record every refusal.
+  await panel.addInitScript(() => {
+    window.__ttv = [];
+    document.addEventListener('securitypolicyviolation', (e) => window.__ttv.push(e.violatedDirective + ' ' + (e.sample || '')));
+  });
   const errors = [];
   panel.on('pageerror', (e) => errors.push(e.message));
   await panel.goto(`chrome-extension://${env.id}/sidepanel.html`);
@@ -66,6 +71,8 @@ async function openPanel(env, targetUrl) {
   }, tabId);
   const close = panel.close.bind(panel);
   panel.close = async () => {
+    const ttv = await panel.evaluate(() => window.__ttv || []).catch(() => []);
+    check('no Trusted Types violation in this panel session', ttv.length === 0, ttv.join(' | '));
     await close();
     await target.close();
   };
@@ -213,6 +220,9 @@ async function main() {
     check('site ZIP recovers original sources from source maps', sh(/^_sourcemaps\//), sn.filter((n) => /map/i.test(n)).join(', '));
     check('site ZIP has the web app manifest and the service worker script', sh(/manifest/) && sh(/sw\.js$/), sn.filter((n) => /manifest|sw/.test(n)).join(', '));
     check('site ZIP has page data, structured data, README.md and an overview', sh(/^data\/page\.json$/) && sh(/^data\/json-ld\.json$/) && sh(/^README\.md$/) && sh(/^docs\/OVERVIEW\.md$/), sn.join(', '));
+    const verbose = execFileSync('unzip', ['-v', siteZip]).toString();
+    check('the Site ZIP deflates text files and stores images and fonts as they are', /Defl:N\s.*\.js\b/.test(verbose) && /Stored\s.*\.png\b/.test(verbose) && /Stored\s.*\.woff2\b/.test(verbose), verbose.slice(0, 600));
+    check('the compressed Site ZIP passes the system integrity test', (() => { try { execFileSync('unzip', ['-tq', siteZip]); return true; } catch (_) { return false; } })());
     const siteReadme = zipRead(siteZip, 'README.md');
     check('site README names the real counts and layout', /Harbor Coffee/.test(siteReadme) && /Saved: \d+ files/.test(siteReadme) && /docs\/OVERVIEW\.md/.test(siteReadme), siteReadme.slice(0, 500));
     const idx = zipRead(siteZip, 'index.html');
@@ -221,6 +231,76 @@ async function main() {
     check('no page errors in the panel', errors.length === 0, errors.join(' | '));
     await target.close();
     await panel.close();
+
+    /* ---------- secrets check before an export ---------- */
+    console.log('\nExport: secrets check');
+    const leaky = `http://127.0.0.1:${fx.demo.port}/demo/leaky`;
+    const everything = (zip) => execFileSync('unzip', ['-p', zip], { maxBuffer: 64 * 1024 * 1024 }).toString();
+    const lk = await openPanel(env, leaky);
+    await selectPart(lk.panel, '#cfg');
+    await lk.panel.evaluate(() => show('export'));
+    await lk.panel.waitForSelector('#el-zip');
+    await lk.panel.click('#el-zip');
+    await lk.panel.waitForSelector('.guard-dialog');
+    const dialogText = await lk.panel.locator('.guard-dialog').innerText();
+    check('a secret in the part stops the export and asks first', /Secrets check/.test(dialogText) && /Stripe live secret key/.test(dialogText));
+    check('the dialog names the kind, the file and the line, and never the value', /line \d+/.test(dialogText) && !dialogText.includes(FAKE.stripe));
+    await lk.panel.click('#guard-cancel');
+    const stray = await lk.panel.waitForEvent('download', { timeout: 1500 }).then(() => true, () => false);
+    check('Cancel saves nothing', !stray);
+
+    const maskedZip = await saveDownload(lk.panel, async () => {
+      await lk.panel.click('#el-zip');
+      await lk.panel.waitForSelector('.guard-dialog');
+      await lk.panel.click('#guard-mask');
+    }, scratch, 'leaky-mask.zip');
+    const maskedAll = everything(maskedZip);
+    check('Mask: the key is gone from every file in the ZIP and a marker is there', !maskedAll.includes(FAKE.stripe) && /\[REDACTED:stripe-secret\]/.test(maskedAll));
+    const mroot = zipList(maskedZip).find((n) => /README\.md$/.test(n)).replace(/README\.md$/, '');
+    const mrep = zipRead(maskedZip, mroot + '_devforge-secrets.md');
+    check('Mask: the ZIP carries a report with the kind and line, and no value', /Stripe live secret key/.test(mrep) && /\| \d+ \|/.test(mrep) && !mrep.includes(FAKE.stripe));
+    check('Mask: the ZIP is still a valid archive', (() => { try { execFileSync('unzip', ['-tq', maskedZip]); return true; } catch (_) { return false; } })());
+
+    const keptZip = await saveDownload(lk.panel, async () => {
+      await lk.panel.click('#el-zip');
+      await lk.panel.waitForSelector('.guard-dialog');
+      await lk.panel.click('#guard-keep');
+    }, scratch, 'leaky-keep.zip');
+    check('Keep: the file is unchanged and the report is added', everything(keptZip).includes(FAKE.stripe) && zipList(keptZip).some((n) => /_devforge-secrets\.md$/.test(n)));
+
+    const omitZip = await saveDownload(lk.panel, async () => {
+      await lk.panel.click('#el-zip');
+      await lk.panel.waitForSelector('.guard-dialog');
+      await lk.panel.click('#guard-omit');
+    }, scratch, 'leaky-omit.zip');
+    check('Leave out: no file with the key is in the ZIP, and the report says which', !everything(omitZip).includes(FAKE.stripe) && zipList(omitZip).some((n) => /_devforge-secrets\.md$/.test(n)));
+
+    const one = await lk.panel.evaluate(async (k) => {
+      const p = guardText('Why does this fail?\nconst key = "' + k + '";', 'prompt');
+      await new Promise((r) => setTimeout(r, 200));
+      document.querySelector('#guard-mask').click();
+      return p;
+    }, FAKE.stripe);
+    check('an AI prompt is checked too, and Mask removes the key from the text', one && !one.includes(FAKE.stripe) && one.includes('[REDACTED:stripe-secret]'));
+    const dropped = await lk.panel.evaluate(async (k) => {
+      const p = guardText('const key = "' + k + '";', 'prompt');
+      await new Promise((r) => setTimeout(r, 200));
+      document.querySelector('#guard-cancel').click();
+      return p;
+    }, FAKE.stripe);
+    check('Cancel on a prompt returns nothing to copy', dropped === null);
+
+    await lk.panel.evaluate(() => show('site'));
+    await lk.panel.waitForSelector('#site-go');
+    const leakySite = await saveDownload(lk.panel, async () => {
+      await lk.panel.click('#site-go');
+      await lk.panel.waitForSelector('.guard-dialog', { timeout: 60000 });
+      await lk.panel.click('#guard-mask');
+    }, scratch, 'leaky-site.zip');
+    const siteAll = everything(leakySite);
+    check('the Site ZIP is checked too: both keys are masked, the report is in the ZIP', !siteAll.includes(FAKE.stripe) && !siteAll.includes(FAKE.aws) && zipList(leakySite).some((n) => /_devforge-secrets\.md$/.test(n)));
+    check('no page errors during the secrets check', lk.errors.length === 0, lk.errors.join(' | '));
+    await lk.panel.close();
   } finally {
     await env.ctx.close();
     await fx.close();

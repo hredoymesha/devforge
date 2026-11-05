@@ -91,7 +91,7 @@ async function homeGlance(box) {
   });
 
   await add(async () => {
-    const all = (await chrome.storage.local.get(DFKeep.PERF_KEY))[DFKeep.PERF_KEY] || {};
+    const all = await DFKeep.readPerf();
     const pts = all[DFKeep.keyFor(DFPerfHist.keyFor(DF.state.url))] || [];
     const sum = DFPerfHist.summary(pts, 'lcp');
     return card(

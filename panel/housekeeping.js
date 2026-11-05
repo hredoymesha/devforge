@@ -39,7 +39,7 @@ const DFKeep = (() => {
       byKind[k].bytes += size(r);
       if (r.auto === true) auto++;
     }
-    const perf = local[PERF_KEY] || {};
+    const perf = DFStored.perfHistory(local[PERF_KEY]).value;
     return {
       localBytes: size(local),
       sessionBytes: size(session),
@@ -88,8 +88,15 @@ const DFKeep = (() => {
     return n;
   }
 
+  // The stored performance history, checked by lib/stored.js. What was not valid is left out and noted.
+  async function readPerf() {
+    const r = DFStored.perfHistory((await chrome.storage.local.get(PERF_KEY))[PERF_KEY]);
+    noteIgnored(r.ignored);
+    return r.value;
+  }
+
   async function clearPerfHistory(olderThanDays) {
-    const all = (await chrome.storage.local.get(PERF_KEY))[PERF_KEY] || {};
+    const all = await readPerf();
     if (olderThanDays == null) {
       await chrome.storage.local.remove(PERF_KEY);
       return Object.values(all).reduce((s, a) => s + a.length, 0);
@@ -123,5 +130,5 @@ const DFKeep = (() => {
     return r;
   }
 
-  return { initSalt, keyFor, usage, cleanTemporary, deleteAutoSaved, clearPerfHistory, clearAcknowledgements, autoRun, PERF_KEY };
+  return { initSalt, keyFor, usage, cleanTemporary, deleteAutoSaved, clearPerfHistory, clearAcknowledgements, autoRun, readPerf, PERF_KEY };
 })();

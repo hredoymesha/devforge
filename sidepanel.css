@@ -1843,3 +1843,79 @@ button .ico {
 .view-host {
   display: contents;
 }
+
+/* ---------- guide ---------- */
+.guide ol,
+.guide ul {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+}
+.guide li {
+  margin: 2px 0;
+}
+.guide p {
+  margin: 4px 0 8px;
+}
+.guide-jump {
+  margin-top: 10px;
+}
+.guide-sub {
+  margin: 8px 0 2px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--mut);
+  font-weight: 600;
+}
+.guide-label {
+  font-weight: 600;
+}
+.guide-card > summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.guide dl {
+  margin: 4px 0 8px;
+}
+.guide dt {
+  font-weight: 600;
+  margin-top: 6px;
+}
+.guide dd {
+  margin: 0 0 0 12px;
+  color: var(--mut);
+}
+
+/* ---------- secrets check dialog ---------- */
+.guard-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.55);
+}
+.guard-dialog .card {
+  width: min(420px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--acc);
+}
+.guard-list {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.guard-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin: 8px 0;
+}

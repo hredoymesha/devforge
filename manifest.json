@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DevForge — Web Dev Workbench",
-  "version": "4.2.0",
+  "version": "4.3.0",
   "description": "Local-first web dev workbench: inspector, network interception, Web Vitals, design tokens, exports and security checks.",
   "minimum_chrome_version": "116",
   "permissions": [
@@ -51,7 +51,7 @@
     }
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'",
+    "extension_pages": "script-src 'self'; object-src 'self'; require-trusted-types-for 'script'; trusted-types devforge-html devforge-url",
     "sandbox": "sandbox allow-scripts allow-modals allow-forms; default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'"
   },
   "sandbox": {

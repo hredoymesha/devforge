@@ -383,7 +383,9 @@ function sortRows(rows) {
 const activeRules = () => net.rules.filter((r) => r.enabled !== false);
 async function loadRules() {
   const { netRules } = await chrome.storage.local.get('netRules');
-  net.rules = Array.isArray(netRules) ? netRules : [];
+  const checked = DFStored.rules(netRules);
+  noteIgnored(checked.ignored);
+  net.rules = checked.value;
 }
 async function saveRules() {
   await chrome.storage.local.set({ netRules: net.rules });
@@ -423,10 +425,37 @@ const ruleSummary = (r) =>
           : 'block';
 
 /* ---------- capture control ---------- */
+// Which built-ins the page has already replaced. Runs in the page's own world before netcap.js, and reads
+// them through a fresh frame's Function.prototype.toString, which the page has not touched.
+function pageBuiltinsReplaced(paths) {
+  const frame = document.createElement('iframe');
+  frame.style.display = 'none';
+  document.documentElement.append(frame);
+  try {
+    const cleanToString = frame.contentWindow.Function.prototype.toString;
+    const found = [];
+    for (const path of paths) {
+      let fn = window;
+      try {
+        for (const k of path.split('.')) fn = fn[k];
+        if (typeof fn !== 'function' || !/\{\s*\[native code\]\s*\}\s*$/.test(cleanToString.call(fn))) found.push(path);
+      } catch (_) {
+        found.push(path);
+      }
+    }
+    return found;
+  } finally {
+    frame.remove();
+  }
+}
+
 async function startCapture() {
   // Inject only when no reachable capture exists, so a second click never wraps fetch twice.
   if ((await netCall('ping')) !== 'pong') {
     const tab = await activeTab();
+    // Page scripts have already run. Note what they replaced before DevForge wraps anything.
+    net.tamper = DFTamper.notice(await exec(pageBuiltinsReplaced, [DFTamper.PATHS], 'MAIN').catch(() => []));
+    net.tamperTab = tab.id;
     // The file's completion value is the channel key; executeScript returns it only to us.
     const key = await exec(null, [], 'MAIN', ['netcap.js']);
     if (key && key.n && key.s) {
@@ -1439,7 +1468,15 @@ registerTab('network', 'Network', async (v) => {
     (rulesHead.textContent = `Interception rules (${activeRules().length} active of ${net.rules.length})`);
   updateRulesHead();
 
+  const tamperBox = h('div');
+  const drawTamper = () => {
+    clear(tamperBox);
+    if (net.captureOn && net.tamper && net.tamperTab === DF.state.tabId)
+      tamperBox.append(h('div', { class: 'card sev-warn', id: 'net-tamper', role: 'alert' }, h('b', null, net.tamper.title + '. '), net.tamper.text));
+  };
+  v.append(tamperBox);
   const drawCapture = () => {
+    drawTamper();
     capBtn.textContent = net.captureOn ? '● Capturing' : 'Start capture';
     capBtn.className = net.captureOn ? 'rec' : 'primary';
     capBtn.title = net.captureOn

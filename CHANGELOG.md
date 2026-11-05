@@ -1,5 +1,107 @@
 # Changelog
 
+## 4.3.0
+
+### New
+- **Guide** panel (Start group, after Home): a plain-English manual. It covers the first five minutes,
+  one card for every panel, common problems, privacy, shortcuts and a glossary. A unit test fails when a
+  panel has no card, when sentences get long, when a technical term has no glossary entry, or when a
+  button name in the text no longer exists in the panel code.
+
+### New (continued)
+- **Security tab: Hardening helpers.** *Build a CSP suggestion* writes a `Content-Security-Policy-Report-Only`
+  header from what the open page loaded (scripts, styles, images, fonts, fetch and XHR targets, frames,
+  form targets), with a SHA-256 hash for each inline script and style and a note for inline event handlers and
+  style attributes. *Compute integrity hashes* downloads each third-party script and stylesheet twice, with
+  the usual size and time limits and the private-address guard, and offers corrected tags with a SHA-384
+  `integrity` and `crossorigin="anonymous"`. It recognises a correct `integrity` attribute, flags a stale one, and
+  gives no tag for a file that changes between requests. Both outputs are labelled generated and inferred.
+  Inline code is only hashed, never returned. New `lib/csp.js`, `secCspFacts` in `agent/security.js`,
+  `panel/securityhelp.js`.
+
+- **Security tab: Check again.** A finding about an exposed path or the page's response headers has a
+  **Check again** button. It re-runs only that check, through the same gate as a scan (same site, GET or
+  HEAD, no cookies, three requests at most, a pause between them, the ownership confirmation on a public
+  site) and answers *Fixed*, *Still present* or *Could not check* with the reason. The saved report is
+  not changed. Other findings can only be checked by a new scan. New `lib/recheck.js`.
+
+- **`npm run package`** builds `DevForge-<version>-extension.zip` and `-source.zip` with `.sha256` files, repeatable
+  byte for byte. `npm run check` now fails when the manifest, `package.json`, `package-lock.json` and the newest
+  changelog heading show different versions.
+- **PRIVACY.md** lists what DevForge stores and where, what it sends and when, and the reason for each permission.
+  A unit test compares it with the manifest and the code.
+
+- **Capture self-check.** When capture starts on demand, DevForge checks 22 built-ins (`fetch`, `XMLHttpRequest`,
+  `JSON`, `Function.prototype` and similar) through a clean frame. If the page replaced any of them first, the
+  Network tab shows a warning that names them and recommends "From page start". Frameworks that patch these
+  functions trigger it too. New `lib/tamper.js`.
+- **Style check** (`scripts/style-check.js`, part of `npm run check`) flags filler wording in the docs, interface
+  strings and comments, and Guide sentences averaging over 18 words. Exceptions go in
+  `scripts/style-allow.json` with a reason. One phrase was rewritten.
+
+### Changed
+- **Saved data is checked before it is used.** Settings, interception rules, performance history and
+  Workspace records are validated when they are read (`lib/stored.js`). A value that is missing, the wrong
+  type, out of range or too large is replaced by its default, or the record is left out, and Settings has
+  a new **Stored data** section that lists what was ignored. Before, a damaged `settings` value was merged
+  into the live settings as it was. Settings now carry `schemaVersion` (2); settings written by 4.2.0
+  have none and are read as version 1 and migrated. A record over 25 MB or without an id or project is
+  left out of the Workspace lists. Nothing is deleted from storage by the check itself.
+
+- **ZIP files are compressed.** Exports, the page bundle, the Site download, recreations and Playground
+  ZIPs now deflate their files (`CompressionStream('deflate-raw')`, `DFZip.buildAsync`). Images, fonts, archives,
+  audio and video are stored as they are, and so is any file that does not get smaller. Where the browser has
+  no `CompressionStream` the files are stored, as before. File names, CRCs and sizes follow the same rules in
+  both cases.
+
+### Fixed
+- **A hostile stylesheet could freeze the panel.** `rewriteCss` and `discoverCssUrls` (Site download) used
+  regular expressions that backtracked badly: 8 KB of `url(` followed by spaces ran for over eight seconds,
+  and 20,000 unclosed `url(` for over three. They now read each `url(...)` token in one bounded pass
+  (`cssUrlTokens` in `lib/site.js`). `URL(...)` in capital letters is now rewritten too.
+- ZIP entry names and Site file names could carry a NUL, which some extractors read as the end of the name
+  (`a/..<NUL>b` was read as `a/..`), a colon (a drive-relative path such as `c:x`, or an NTFS data stream),
+  trailing dots or spaces that Windows drops (`.. ` acts as `..`), or a direction-override character that
+  makes `photo<RLO>gpj.exe` look like `photoexe.jpg`. All are removed or replaced before a name is written.
+- A `<style>` inside `<math>` lost its child elements in the rewritten `index.html` of a Site download.
+- **A page could break the page agent, or freeze its own tab, by naming form controls after DOM
+  properties.** `<input name="getAttribute">` made reads throw (the accessibility and security audits,
+  `fullDom`, form data, Security facts), and `<input name="parentElement">` sent the Performance audit
+  into an endless loop. The agent now reads elements through the prototypes (`dom` in `agent.js`),
+  ESLint enforces it, and `AGENT_VERSION` is 13.
+- An inline script with the id `__df_bridge` was left out of the scripts list, the Site and Export
+  downloads and the Security scan, so a page could hide code from them by using that id.
+- Pick mode stayed on after the panel was closed, and kept swallowing the page's mouse events until Esc.
+  The page agent now ends it when the panel goes away.
+
+### Tests
+- New property and fuzz tests with seeded hostile input and time budgets (`test/fuzz.test.js`,
+  `e2e/fuzzgen.js`): the private-address check against a CIDR table for every spelling the URL parser
+  accepts (IPv4 and IPv6, including mapped, NAT64 and 6to4 forms), CSS rewriting, ZIP and Site paths,
+  secret detectors and probe signatures. In the browser, hostile pages go through `fullDom`
+  (`neutralizeTree`, `escapeRawText`) and the Site HTML rewrite. A failing run prints its seed; replay it
+  with `FUZZ_SEED=<n> FUZZ_ROUNDS=<n>`.
+
+### Security
+- **Supply chain.** Every action in the CI workflow is pinned to a full commit SHA (a test fails on a
+  tag or branch reference), and the workflow is still read-only. `npm run check` now verifies the
+  SHA-256 of the two vendored files, `lib/acorn.js` and `lib/beautifier.min.js`. Both match the
+  published npm packages byte for byte (Acorn 8.18.0; js-beautify 1.15.3 and 1.15.4 ship the same
+  file). The README records the versions and how to update them.
+- **Secrets check before an export.** ZIPs (selected part, page bundle, Site, Workspace project), single
+  exported files and AI prompts are scanned for credential-like values (AWS, Stripe, GitHub, Slack,
+  SendGrid, Google API keys, private keys, JWTs, hard-coded password/token/secret assignments, in script
+  or JSON form). If something matches, a dialog lists the kind, file and line, never the value, and asks:
+  mask the values with `[REDACTED:type]`, keep the files with a warning note, leave those files out, or
+  cancel. The ZIP gets `_devforge-secrets.md` with the same list. The matching is on shape, so it can
+  miss real secrets and flag harmless ones. New `lib/exportguard.js`, `scanSecretSpans` in
+  `lib/secprobe.js`, `panel/exportguard.js`.
+- Extension pages now enforce Trusted Types (`require-trusted-types-for 'script'`). A plain string at an
+  HTML or script-URL sink is refused by the browser. Two named policies exist and the manifest allows no
+  other: `devforge-html` (Recreate preview, Site HTML rewrite) and `devforge-url` (only a relative path to
+  a saved file). A unit test fails when a file writes to a sink, and the browser suites record every
+  violation.
+
 ## 4.2.0
 
 ### New

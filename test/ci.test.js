@@ -29,3 +29,18 @@ test('CI triggers on pull requests and does not use pull_request_target', () => 
   assert.match(code, /^on:\n(?:.*\n)*?\s+pull_request:/m);
   assert.doesNotMatch(code, /pull_request_target/);
 });
+
+test('every action is pinned to a full commit SHA with a version comment', () => {
+  const uses = wf.split('\n').filter((l) => /^\s*-?\s*uses:/.test(l));
+  assert.ok(uses.length >= 4);
+  for (const l of uses) {
+    assert.match(l, /uses:\s*[\w.-]+\/[\w./-]+@[0-9a-f]{40}\s+# v\d+\.\d+\.\d+\s*$/, 'not pinned: ' + l.trim());
+  }
+});
+
+test('a tag or branch reference instead of a SHA would be caught', () => {
+  const re = /uses:\s*[\w.-]+\/[\w./-]+@[0-9a-f]{40}\s+# v\d+\.\d+\.\d+\s*$/;
+  assert.ok(!re.test('      - uses: actions/checkout@v4'));
+  assert.ok(!re.test('      - uses: actions/checkout@main # v4.4.0'));
+  assert.ok(re.test('      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0'));
+});

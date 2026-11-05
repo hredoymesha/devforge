@@ -107,6 +107,25 @@ Limits: at most 1,500 files, 150 MB in total, 25 MB per file. Private and loopba
 page is not on are never fetched. API addresses are not requested again; responses captured in the
 Network tab are included instead.
 
+## Secrets check
+
+Before a ZIP, a single exported file or an AI prompt leaves the panel, DevForge looks for values that
+have the shape of a credential: AWS access keys, Stripe live keys, GitHub, Slack and SendGrid tokens,
+Google API keys, private keys, JSON Web Tokens, and assignments such as `apiKey: "…"` or
+`"password": "…"` with a long, non-placeholder value. Images, fonts and other binary files are not
+read. If anything matches, a dialog lists each match as kind, file and line (the value is never shown)
+and asks what to do:
+
+- **Mask them** replaces each value with `[REDACTED:kind]`. A private key is replaced from its first
+  line to its last. The rest of the file is unchanged.
+- **Keep, with a warning** exports the files as they are.
+- **Leave those files out** drops every file that has a match (ZIPs only).
+- **Cancel** saves nothing.
+
+Unless you cancel, the ZIP also contains `_devforge-secrets.md`, which lists the same kind, file and
+line. It is a check on shape only. It can flag a public key or an example, and it cannot find a secret
+that looks like ordinary text. Review the files yourself before you share them.
+
 ## What no export can contain
 
 Server-side code and databases, private APIs, credentials, content a page never requested, closed

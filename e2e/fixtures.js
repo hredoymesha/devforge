@@ -15,6 +15,19 @@
  */
 const http = require('node:http');
 
+// Files served for the /demo/hardening page. The hash of known.js is what its tag already declares.
+const VENDOR = {
+  lib: 'window.__lib = 1;\n',
+  css: '.lib { margin: 0; }\n',
+  known: 'window.__known = true;\n',
+  stale: 'window.__stale = 2;\n',
+  inlineStyle: '.inline { color: red }',
+  inlineScript: "var inlineKey = '" + 'sk_live_' + "a1B2c3D4e5F6g7H8i9J0k1L2'; fetch('TP/vendor/data.json').catch(function () {});",
+};
+VENDOR.knownIntegrity = 'sha384-' + require('node:crypto').createHash('sha384').update(VENDOR.known).digest('base64');
+
+// Control names that shadow properties of the form that holds them (see the /demo/clobber page).
+const CLOBBER_NAMES = ['tagName', 'attributes', 'getAttribute', 'hasAttribute', 'setAttribute', 'removeAttribute', 'children', 'childNodes', 'firstChild', 'lastChild', 'nextSibling', 'previousSibling', 'parentElement', 'parentNode', 'querySelector', 'querySelectorAll', 'matches', 'closest', 'contains', 'getRootNode', 'remove', 'cloneNode', 'getBoundingClientRect', 'textContent', 'classList', 'localName', 'nodeName', 'shadowRoot', 'id', 'className', 'style', 'nodeType', 'innerHTML', 'outerHTML', 'action', 'method', 'elements', 'length', 'name', 'autocomplete', 'target', 'enctype', 'title', 'lang', 'dir', 'hidden'];
 const FAKE = {
   aws: 'AKIA' + 'IOSFODNN7EXAMPLE',
   stripe: 'sk_live_' + 'a1B2c3D4e5F6g7H8i9J0k1L2',
@@ -41,6 +54,7 @@ const text = (res, body, type = 'text/plain', status = 200) => {
 
 async function startFixtures() {
   let vulnPort = 0;
+  const vulnFixed = { git: false }; // a test can switch an exposure off to see the re-check say "fixed"
   let versionedBody = 'one';
   const sink = await listen((req, res) => text(res, 'SECRET-FROM-PRIVATE-HOST'));
 
@@ -69,7 +83,7 @@ async function startFixtures() {
     if (p === '/app.js.map') return text(res, '{"version":3,"sources":["src/app.js"],"names":[],"mappings":"AAAA"}', 'application/json');
     if (p === '/static/third-party.js') return text(res, 'void 0', 'application/javascript');
     if (p === '/static/jquery-1.12.4.min.js') return text(res, '/*! jQuery v1.12.4 */window.jQuery=function(){};', 'application/javascript');
-    if (p === '/.git/HEAD') return text(res, 'ref: refs/heads/main\n');
+    if (p === '/.git/HEAD' && !vulnFixed.git) return text(res, 'ref: refs/heads/main\n');
     if (p === '/.env') return text(res, `APP_NAME=demo\nDB_PASSWORD=${FAKE.dbPassword}\nAPI_TOKEN=abcdef0123456789\n`);
     if (p === '/uploads/') return html(res, '<html><head><title>Index of /uploads</title></head><body><h1>Index of /uploads</h1></body></html>');
     if (p === '/phpinfo.php') return html(res, '<html><head><title>phpinfo()</title></head><body>PHP Version 7.4.3</body></html>');
@@ -300,11 +314,63 @@ customElements.define('fancy-card', FancyCard);
 .unrelated-sheet-rule{color:red}`,
         'text/css'
       );
+    // A page with fake credentials in an inline script and in a script file, for the Secrets check.
+    if (p === '/demo/leaky')
+      return html(
+        res,
+        '<!doctype html><html><head><title>Leaky</title></head><body><div id="cfg" class="cfg">Settings</div>' +
+          "<script>function initCfg(){ var el = document.querySelector('#cfg'); el.setAttribute('data-k', '" + FAKE.stripe + "'); }</script>" +
+          '<script src="/demo/leaky.js"></script></body></html>'
+      );
+    if (p === '/demo/leaky.js') return text(res, 'window.cfg = { awsKeyId: "' + FAKE.aws + '" };', 'application/javascript');
+    // Elements named after built-in properties (DOM clobbering), and an inline script that uses the
+    // id DevForge once used for its own bridge script.
+    if (p === '/demo/clobber')
+      return html(
+        res,
+        '<!doctype html><html><head><title>Clobber</title></head><body>' +
+          '<form id="f1" action="/submit" method="post" autocomplete="off">' +
+          CLOBBER_NAMES.map((n) => '<input name="' + n + '" value="v">')
+            .join('') +
+          '<input type="password" name="pw"><input type="file" name="up"></form>' +
+          '<form name="querySelectorAll"></form><img name="forms"><img name="getElementById"><embed name="body"><form name="documentElement"></form>' +
+          '<img name="cookie"><img name="createElement"><img name="head"><img name="querySelector">' +
+          '<script id="__df_bridge">window.__hiddenByName = "inline code that must be listed";</script>' +
+          '</body></html>'
+      );
+    // Third-party files for the Hardening helpers: the page is on 127.0.0.1 and loads them from
+    // example.com (mapped to 127.0.0.1 by the browser flag), so they count as another origin.
+    if (p === '/demo/hardening') {
+      const tp = 'http://example.com:' + String(req.headers.host).split(':')[1];
+      const lo = 'http://localhost:' + String(req.headers.host).split(':')[1];
+      return html(
+        res,
+        '<!doctype html><html><head><title>Hardening</title>' +
+          '<link rel="stylesheet" href="' + tp + '/vendor/lib.css">' +
+          '<script src="' + tp + '/vendor/lib.js"></script>' +
+          '<script src="' + tp + '/vendor/known.js" integrity="' + VENDOR.knownIntegrity + '" crossorigin="anonymous"></script>' +
+          '<script src="' + tp + '/vendor/stale.js" integrity="sha384-' + 'A'.repeat(64) + '" crossorigin="anonymous"></script>' +
+          '<script src="' + tp + '/vendor/changing.js" async></script>' +
+          '<script src="' + lo + '/vendor/lib.js"></script>' +
+          '<style>' + VENDOR.inlineStyle + '</style></head><body><h1>Hardening</h1>' +
+          '<img src="' + tp + '/vendor/pic.png" alt="">' +
+          '<div id="styled" style="color:blue">x</div>' +
+          '<script>' + VENDOR.inlineScript.replace('TP', tp) + '</script></body></html>'
+      );
+    }
+    if (p === '/vendor/lib.js') return text(res, VENDOR.lib, 'application/javascript');
+    if (p === '/vendor/lib.css') return text(res, VENDOR.css, 'text/css');
+    if (p === '/vendor/known.js') return text(res, VENDOR.known, 'application/javascript');
+    if (p === '/vendor/stale.js') return text(res, VENDOR.stale, 'application/javascript');
+    if (p === '/vendor/changing.js') return text(res, 'window.__c = ' + Math.random() + ';', 'application/javascript');
+    if (p === '/vendor/data.json') return text(res, '{"ok":true}', 'application/json');
+    if (p === '/vendor/pic.png') return bin(PNG_BYTES, 'image/png');
     if (p === '/demo/menu') return html(res, '<!doctype html><title>Menu</title><h1>Menu</h1>');
     return text(res, 'not found', 'text/plain', 404);
   });
 
   vulnPort = vuln.port;
+  vuln.fix = (what) => (vulnFixed[what] = true);
 
   const SHELL = '<!doctype html><html><head><title>App</title></head><body><div id="root"></div><script src="/assets/app.js"></script></body></html>';
   const spa = await listen((req, res, u) => {
@@ -333,7 +399,7 @@ customElements.define('fancy-card', FancyCard);
   };
 }
 
-module.exports = { startFixtures, FAKE };
+module.exports = { startFixtures, FAKE, CLOBBER_NAMES, VENDOR };
 
 if (require.main === module) {
   startFixtures().then((f) => {

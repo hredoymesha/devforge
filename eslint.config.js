@@ -77,7 +77,25 @@ module.exports = [
     // Page agent: injected into the page's isolated world.
     files: ['agent.js', 'agent/*.js'],
     languageOptions: { sourceType: 'script', ecmaVersion: 'latest', globals: { ...globals.browser, chrome: 'readonly', ...agentGlobals } },
-    rules: { ...security, 'preserve-caught-error': 'off', 'no-unused-vars': ['warn', { args: 'none', caughtErrors: 'none', varsIgnorePattern: '^_', vars: 'local', ignoreRestSiblings: true }], 'no-empty': ['error', { allowEmptyCatch: false }] },
+    rules: {
+      ...security,
+      'preserve-caught-error': 'off',
+      'no-unused-vars': ['warn', { args: 'none', caughtErrors: 'none', varsIgnorePattern: '^_', vars: 'local', ignoreRestSiblings: true }],
+      'no-empty': ['error', { allowEmptyCatch: false }],
+      // A page can shadow these on a <form> by naming an input after them, so the agent reads
+      // elements through `dom` (see the comment where it is defined in agent.js).
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'CallExpression[callee.type="MemberExpression"][callee.property.name=/^(getAttribute|hasAttribute|setAttribute|removeAttribute|getAttributeNames|querySelector|querySelectorAll|matches|closest|getBoundingClientRect|cloneNode|contains|getRootNode|remove)$/]:not([callee.object.name=/^(dom|document|this)$/])',
+          message: 'Use dom.<name>(element, ...) so a form with a control of that name cannot break this read.',
+        },
+        {
+          selector: 'MemberExpression[property.name=/^(tagName|attributes|children|parentElement|parentNode|childNodes|firstChild|lastChild|nextSibling|previousSibling|firstElementChild|lastElementChild|nextElementSibling|previousElementSibling|textContent|classList|localName|nodeName|nodeType|shadowRoot)$/]:not([object.name=/^(dom|document|window|this)$/]):not(AssignmentExpression > MemberExpression.left):not(CallExpression > MemberExpression.callee)',
+          message: 'Use dom.<name>(element) so a form with a control of that name cannot break this read.',
+        },
+      ],
+    },
   },
   {
     // Scripts that run in the page's own world, and the sandbox runner.

@@ -322,14 +322,16 @@ function bundleSection() {
         return 'page';
       }
     })();
+    const safe = await guardFiles(files.map((f) => ({ path: f.path, data: f.data })));
+    if (!safe) return;
     if (mode === 'zip') {
-      download('devforge-bundle-' + host + '-' + stamp() + '.zip', DFZip.build(files.map((f) => ({ path: f.path, data: f.data }))), 'application/zip');
+      download('devforge-bundle-' + host + '-' + stamp() + '.zip', await DFZip.buildAsync(safe), 'application/zip');
     } else {
       // Separate files: the same names without folders, one download each.
-      for (const [i, f] of files.entries()) {
+      for (const [i, f] of safe.entries()) {
         const name = f.path.replace(/\//g, '__');
         download(name, f.data instanceof Uint8Array ? new Blob([f.data], { type: bundleType(name) }) : f.data, bundleType(name));
-        if (i < files.length - 1) await sleep(250);
+        if (i < safe.length - 1) await sleep(250);
       }
     }
     const bad = report.filter((r) => r.status === 'failed' || r.status === 'skipped' || r.status === 'partial');

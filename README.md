@@ -34,6 +34,7 @@ The panels are grouped the way you would move through a debugging session.
 | Panel | What it does |
 | --- | --- |
 | Home | Shows whether DevForge can work on the current page, status cards (site access, Owner session, this site's security trend, this page's performance, stored data), one-click entry points for the common jobs and your recent Workspace items. New installs open here. |
+| Guide | A manual inside the panel, written in plain English. It has the first five minutes, one card for every panel (what it does, three steps, what it cannot do), common problems, what stays on your computer, shortcuts and a glossary. |
 
 **Inspect and style**
 
@@ -70,12 +71,12 @@ The panels are grouped the way you would move through a debugging session.
 
 | Panel | What it does |
 | --- | --- |
-| Export | Exports the selected part of a page as a ZIP with its HTML (outer, inner, in context, shadow DOM, standalone), CSS (rules, computed, matched, inherited), the JavaScript that refers to it, selectors, structure, generated content, images and fonts, a preview picture and a README that describes the part; or one file at a time. Selecting the whole page exports the page. Also: page bundles (scripts, styles, source maps, storage, network, HAR), a developer report, screenshots (element, viewport or stitched full page) and a pixel diff. See [docs/EXPORTS.md](docs/EXPORTS.md). |
+| Export | Exports the selected part of a page as a ZIP with its HTML (outer, inner, in context, shadow DOM, standalone), CSS (rules, computed, matched, inherited), the JavaScript that refers to it, selectors, structure, generated content, images and fonts, a preview picture and a README that describes the part; or one file at a time. Selecting the whole page exports the page. Also: page bundles (scripts, styles, source maps, storage, network, HAR), a developer report, screenshots (element, viewport or stitched full page) and a pixel diff. Before anything is saved, DevForge checks the files for credential-like values and lets you mask them, keep them with a warning or leave those files out. See [docs/EXPORTS.md](docs/EXPORTS.md). |
 | Site | Detects the site's technology and downloads the files the page uses as an organised ZIP (rendered and original HTML, scripts, styles, fonts, images, manifest and service worker, structured data, a report and a README). Recovers original sources where the site publishes source maps. Never fetches private or loopback addresses. |
 | Recreate | Rebuilds an element from its computed styles, then refines the copy until its layout matches the original. |
 | Playground | An HTML/CSS/JS scratchpad that runs in a sandboxed page with no access to extension APIs. |
 | Automate | Records and replays step-by-step workflows, stored as JSON. |
-| AI | Builds a prompt from the selected element or task. You paste it into the AI chat you already use. No API keys are needed, and nothing is sent until you click Send. |
+| AI | Builds a prompt from the selected element or task. You use it in the AI chat you already use. No API keys are needed, and nothing is sent until you click. **Copy only** stays on your computer. **Copy & open** opens the AI site, and for some sites it puts the prompt in the site's address, so read the prompt first. The prompt is checked for credential-like values before it is copied. |
 | Workspace | Projects that collect what you save from other panels (elements, components, screenshots, data, workflows, playgrounds, AI tasks), stored in IndexedDB. |
 
 A command palette (`Ctrl+K`), in-panel shortcuts you can rebind, and light, dark and system
@@ -135,6 +136,8 @@ requests or go below 100 ms.
   configuration files, directory listings, phpinfo, Spring Actuator, Werkzeug and Laravel debug
   tools, API documentation, admin interfaces. A hit needs a content signature, not just HTTP 200, so
   single-page apps that answer every path with 200 are not flagged.
+- Check again: a finding about an exposed path or the response headers can be re-run alone after you fix the site. It uses the same limits as a scan and answers fixed, still present or could not check. The saved report is not changed.
+- Hardening helpers (separate from the scan): a `Content-Security-Policy-Report-Only` suggestion built from what the open page loads, and Subresource Integrity tags for its third-party scripts and stylesheets. Both are labelled generated and inferred. Integrity hashes need the files downloaded twice, within the usual size, time and private-address limits.
 - Indicators that need a person: open-redirect style parameters, sequential IDs (possible IDOR),
   POST forms without a CSRF token field, upload forms, CORS behaviour that cannot be tested from an
   extension. These are labelled **Needs manual verification** with safe steps.
@@ -207,7 +210,7 @@ sandbox.html/.js     Runs Playground code on an opaque origin with its own stric
 Where data is stored: settings and interception rules go in `chrome.storage.local`, a command
 waiting for the panel to start and the Security tab's per-site confirmations go in
 `chrome.storage.session` (cleared when the browser closes), and Workspace projects, including saved
-security reports, go in IndexedDB. None of it leaves the browser. Workspace data is not encrypted,
+security reports, go in IndexedDB. None of it leaves the browser. Everything is checked when it is read back (`lib/stored.js`): a damaged value is replaced by its default or left out, and Settings lists what was ignored. Workspace data is not encrypted,
 so treat saved security reports (which describe a site's weaknesses) like any other sensitive file.
 
 Network capture isolation: the capture log lives in a closure inside the page's own JavaScript
@@ -256,10 +259,9 @@ Unit tests are in `test/` and cover the pure modules in `lib/`. See [CONTRIBUTIN
 for conventions and [docs/](docs/) for the security model, Owner mode, exports, accessibility and
 browser support.
 
-To make a ZIP for a release, include only the extension files: `manifest.json`, `background.js`,
-`sidepanel.html`, `sidepanel.css`, `agent.js`, `netcap.js`, `netbridge.js`, `sandbox.html`,
-`sandbox.js`, `agent/`, `lib/`, `panel/` and `icons/`. Keep the manifest `description` at 132
-characters or fewer.
+`npm run package` makes the release files in `release-out/`: `DevForge-<version>-extension.zip` (only the files Chrome loads: `manifest.json`, `background.js`, `sidepanel.html`, `sidepanel.css`, `agent.js`, `netcap.js`, `netbridge.js`, `sandbox.html`, `sandbox.js`, `agent/`, `lib/`, `panel/` and `icons/`), `DevForge-<version>-source.zip`, and a `.sha256` file for each. Files are stored in sorted order with a fixed timestamp, so two runs give the same checksum. `npm run check` fails if the version differs between `manifest.json`, `package.json`, `package-lock.json` and the newest `CHANGELOG.md` heading. Keep the manifest `description` at 132 characters or fewer.
+
+What DevForge keeps and sends is described in [PRIVACY.md](PRIVACY.md).
 
 ## License
 
@@ -267,4 +269,11 @@ Released under the [MIT License](LICENSE).
 
 Bundled third-party code, both MIT-licensed by their own authors:
 [Acorn](https://github.com/acornjs/acorn) 8.18.0 (`lib/acorn.js`) and
-[js-beautify](https://github.com/beautifier/js-beautify) (`lib/beautifier.min.js`).
+[js-beautify](https://github.com/beautifier/js-beautify) 1.15.3 or 1.15.4 (`lib/beautifier.min.js`).
+
+Both files are copies of the published npm packages (`dist/acorn.js` and `js/lib/beautifier.min.js`),
+byte for byte, and `npm run check` fails if either one changes. js-beautify 1.15.3 and 1.15.4 ship the
+same file, so the exact release cannot be told apart. When this was checked (2026-11-05) the newest
+releases were Acorn 8.19.0 and js-beautify 2.0.3. DevForge has not moved to them yet. To update one,
+replace the file with the new release, compare it with the package, then change the SHA-256 in
+`scripts/check.js` and the version here.

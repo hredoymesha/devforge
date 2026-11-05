@@ -18,6 +18,7 @@ systemDark.addEventListener('change', applyTheme);
 
 const ORDER = [
   'home',
+  'guide',
   'inspect',
   'css',
   'network',
@@ -133,7 +134,7 @@ function layoutTabs() {
 // Hidden panels are listed by area, like DevTools groups its tools. Panels not listed here
 // (Settings, or any panel added later) go in an untitled group at the end.
 const TAB_GROUPS = [
-  ['Start', ['home']],
+  ['Start', ['home', 'guide']],
   ['Inspect & style', ['inspect', 'css', 'tokens']],
   ['Network', ['network']],
   ['Performance', ['perf', 'mutations', 'audit']],
@@ -442,6 +443,15 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+/* ---------- pick mode ends when this panel closes ---------- */
+// While the page agent is picking it holds a port to the panel. Accepting it (for the tab this panel
+// works on, from this extension only) is all that is needed: the port drops when the panel does, and
+// the agent then stops picking. Any other port is closed at once.
+chrome.runtime.onConnect.addListener((port) => {
+  const ok = port.name === 'df-pick' && port.sender && port.sender.id === chrome.runtime.id && port.sender.tab && port.sender.tab.id === DF.state.tabId;
+  if (!ok) port.disconnect();
+});
+
 /* ---------- messages from the page agent / background ---------- */
 function runCommand(command) {
   chrome.storage.session.remove('pendingCommand').catch(() => {});
@@ -515,11 +525,17 @@ chrome.tabs.onUpdated.addListener((id, ch) => {
 (async () => {
   try {
     const r = await chrome.storage.local.get('settings');
-    if (r.settings) Object.assign(DF.state.settings, r.settings);
+    // Checked and migrated before anything reads it (lib/stored.js). A bad value falls back to its default.
+    const s = DFStored.settings(r.settings, DF.state.settings);
+    Object.assign(DF.state.settings, s.value);
+    noteIgnored(s.ignored);
+    // Save the new version number, but never over data that was ignored or written by a newer DevForge.
+    if (s.migrated && !s.ignored.length) saveSettings();
   } catch (_) {
     /* saved settings are unavailable; defaults apply */
   }
   applyTheme();
+  DFStore.setIssueHandler(noteIgnored);
   await DFKeep.initSalt().catch(() => {});
   DFKeep.autoRun(DF.state.settings).catch(() => {});
   try {

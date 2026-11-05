@@ -8,7 +8,7 @@
 (() => {
   const DF = window.__DF;
   if (!DF || DF.mutStart) return;
-  const { handleOf, target, clip, isOwn, label, onDestroy } = DF.kit;
+  const { handleOf, target, clip, isOwn, label, onDestroy, dom } = DF.kit;
 
   const MAX_LOG = 2000;
   const RATE_WINDOW = 60; // seconds of per-second history kept for the sparkline
@@ -27,8 +27,8 @@
   };
 
   const describeNode = (n) => {
-    if (n.nodeType === 3) return '"' + clip(n.textContent.trim(), 40) + '"';
-    if (n.nodeType === 8) return '<!--' + clip(n.textContent, 30) + '-->';
+    if (dom.nodeType(n) === 3) return '"' + clip(dom.textContent(n).trim(), 40) + '"';
+    if (dom.nodeType(n) === 8) return '<!--' + clip(dom.textContent(n), 30) + '-->';
     return label(n);
   };
 
@@ -45,7 +45,7 @@
   // Flash overlay: a pool of absolutely positioned boxes in a closed shadow root.
   function flashEl(el) {
     if (!m.flash || !el || !el.getBoundingClientRect) return;
-    const r = el.getBoundingClientRect();
+    const r = dom.getBoundingClientRect(el);
     if (!r.width && !r.height) return;
     if (r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth) return;
     const f = m.flash;
@@ -77,7 +77,7 @@
   function dropFlashLayer() {
     if (!m.flash) return;
     cancelAnimationFrame(m.flash.raf);
-    m.flash.host.remove();
+    dom.remove(m.flash.host);
     m.flash = null;
   }
 
@@ -85,20 +85,20 @@
     const t = Math.round(performance.now() - m.startedAt);
     for (const rec of list) {
       if (isOwn(rec.target)) continue;
-      const el = rec.target.nodeType === 1 ? rec.target : rec.target.parentElement;
+      const el = dom.nodeType(rec.target) === 1 ? rec.target : dom.parentElement(rec.target);
       if (!el) continue;
       const h = handleOf(el);
       const entry = { seq: ++m.seq, t, type: rec.type, h, target: label(el) };
       if (rec.type === 'attributes') {
         entry.attr = rec.attributeName;
         entry.old = rec.oldValue == null ? null : clip(rec.oldValue, 200);
-        const cur = el.getAttribute(rec.attributeName);
+        const cur = dom.getAttribute(el, rec.attributeName);
         entry.now = cur == null ? null : clip(cur, 200);
         // Frameworks often re-set an attribute to the same value; flag it, it is wasted work.
         entry.noop = entry.old === entry.now;
       } else if (rec.type === 'characterData') {
         entry.old = clip(rec.oldValue, 120);
-        entry.now = clip(rec.target.textContent, 120);
+        entry.now = clip(dom.textContent(rec.target), 120);
         entry.noop = entry.old === entry.now;
       } else {
         const added = [...rec.addedNodes].filter((n) => !isOwn(n));
@@ -137,7 +137,7 @@
     m.startedAt = performance.now();
     m.opts = {
       scope: opts.scopeH ? label(root) : 'document',
-      attributes: opts.attributes !== false,
+      attributes: dom.attributes(opts) !== false,
       childList: opts.childList !== false,
       characterData: opts.characterData !== false,
       flash: !!opts.flash,
@@ -146,8 +146,8 @@
     m.mo.observe(root, {
       subtree: true,
       childList: m.opts.childList,
-      attributes: m.opts.attributes,
-      attributeOldValue: m.opts.attributes,
+      attributes: dom.attributes(m.opts),
+      attributeOldValue: dom.attributes(m.opts),
       characterData: m.opts.characterData,
       characterDataOldValue: m.opts.characterData,
     });
@@ -195,7 +195,7 @@
       truncated: fresh.length > 500,
       dropped: m.dropped,
       counts: m.counts,
-      total: m.counts.attributes + m.counts.childList + m.counts.characterData,
+      total: dom.attributes(m.counts) + m.counts.childList + m.counts.characterData,
       elapsed: m.startedAt ? Math.round(performance.now() - m.startedAt) : 0,
       hot,
       rate: m.mo ? rate : [],

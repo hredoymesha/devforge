@@ -22,13 +22,14 @@ only place `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource` and `sendBeacon
   page script could ask for the key. A test fails if that option is ever used.
 
 Limits: on-demand capture starts after the page's own scripts. A page that replaced a built-in
-before DevForge was injected can weaken that guarantee. Capture from page start (Settings) runs
+before DevForge was injected can weaken that guarantee. When capture starts on demand, the panel checks
+22 built-ins through a clean frame and warns in the Network tab if the page replaced any of them. Capture from page start (Settings) runs
 before page scripts and is the stronger mode. Until the document has loaded, a page script can send
 `netbridge.js` a fake key; that can only make capture unreachable, it never reveals the real key.
 
 ## 2. Downloads of page-derived addresses
 
-Exports, the Site download and source-map recovery fetch addresses that a page chose.
+Exports, the Site download, source-map recovery and the Subresource Integrity helper fetch addresses that a page chose.
 
 - `blocksPrivate()` (`lib/safe.js`) parses the host (IPv4, IPv6 including IPv4-mapped, NAT64 and
   6to4 forms, special-use ranges, trailing dots, malformed literals) and refuses private, loopback
@@ -49,8 +50,13 @@ an extension, so host-name checks and the redirect rule do not catch it.
 
 - Extension pages build their DOM with the `h()` helper (text nodes). Page or network data never
   goes through `innerHTML`.
-- The extension-page content security policy is `script-src 'self'`. Only the Playground sandbox
-  page allows `eval`, and it runs on an opaque origin with no extension APIs. It accepts a run
+- The extension-page content security policy is `script-src 'self'` with `require-trusted-types-for 'script'`.
+  The browser refuses a plain string at an HTML or script-URL sink (`innerHTML`, `srcdoc`, `DOMParser`,
+  `<script src>`). Two named policies exist (`lib/trusted.js`): `devforge-html` for the sandboxed Recreate
+  preview and Site's HTML rewrite, and `devforge-url`, which accepts only a relative path to a saved
+  file. The manifest lists those two names and no others. `test/trusted.test.js` fails if a file
+  writes to a sink, and every browser suite records Trusted Types violations. Only the Playground
+  sandbox page allows `eval`, and it runs on an opaque origin with no extension APIs. It accepts a run
   message only from the panel that embeds it.
 - Anything from page data that ends up in a saved file passes through the agent's
   `neutralizeTree`, `escapeRawText` and `cssUrls` helpers. Event handlers, `javascript:` addresses
@@ -58,8 +64,12 @@ an extension, so host-name checks and the redirect rule do not catch it.
   The "standalone" HTML in an element export uses this neutralised copy.
 - Messages sent to the panel are validated (sender is the extension itself, message type, tab and
   handle format). Saved security reports are normalised before they are shown.
-- Detectors that scan hostile text use bounded quantifiers. Timing tests guard against
-  catastrophic backtracking.
+- Detectors and rewriters that read hostile text use bounded quantifiers or one-pass scanners. Seeded
+  fuzz tests with time budgets (`test/fuzz.test.js`, and the Fuzz block of `e2e/features.js` for the page
+  agent and the Site rewrite) guard against catastrophic backtracking and against unsafe output.
+- Exports (ZIPs, single files, AI prompts) are checked for credential-like values before they are saved
+  (`lib/exportguard.js`). Matches are masked, kept with a warning or left out, as the user chooses. The
+  check is on shape and is not a guarantee.
 - Network data is redacted by default (`lib/safe.js`). Keys are matched by word, so `authToken` and
   `client_secret` are masked while `author` is not. CSV exports neutralise spreadsheet formulas.
 
@@ -124,6 +134,21 @@ without the key.
 
 Reviewed in Chromium only; see [BROWSER-SUPPORT.md](BROWSER-SUPPORT.md). Not tested: screen readers,
 a real ten-minute idle lock (a shortened timer was used), behaviour against real third-party sites,
-and secret-field redaction in the workflow recorder. Known and not fixed: form elements whose names
-shadow DOM properties can break a few agent reads, and an element id of `__df_bridge` can be spoofed
-by a page.
+and secret-field redaction in the workflow recorder.
+
+Fixed in 4.3.0 and covered by tests (`e2e/features.js`, blocks "Page agent against hostile names" and
+"Pick mode and the panel"):
+
+- A form answers to the names of its controls before its own properties, so a page could name an input
+  `getAttribute` or `parentElement` and break an agent read, or make a loop that walks `parentElement`
+  run forever and freeze the tab. The agent now reads elements through `dom` (see `agent.js`), and
+  ESLint stops new code from calling the shadowable properties directly.
+- The agent no longer skips an inline script because its id is `__df_bridge`. DevForge stopped using
+  that id long ago, so the check only let a page hide code from the scripts list, the Site download and
+  the Security scan.
+- Pick mode ends when the panel closes. The agent holds a port to the panel while picking.
+
+Still open: DevForge removes its own highlight elements from a saved page by the id prefix `__df_`, so a
+page can leave one of its own elements out of a saved copy by using that prefix. `dom` covers the
+properties the agent reads; others, such as `id`, `className` and `style`, can still be shadowed on a
+form and give a wrong string, never an error.

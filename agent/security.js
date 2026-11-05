@@ -17,7 +17,7 @@
 (() => {
   const DF = window.__DF;
   if (!DF || DF.secFacts) return;
-  const { clip, safe } = DF.kit;
+  const { clip, safe, dom } = DF.kit;
 
   const NAME_MAX = 100;
   const LIST_MAX = 200;
@@ -87,8 +87,8 @@
         idPath: /\/\d{2,12}(\/|$)/.test(u.pathname),
       });
     };
-    document.querySelectorAll('a[href]').forEach((a) => add(a.getAttribute('href'), true));
-    document.querySelectorAll('form[action]').forEach((f) => add(f.getAttribute('action'), true));
+    document.querySelectorAll('a[href]').forEach((a) => add(dom.getAttribute(a, 'href'), true));
+    document.querySelectorAll('form[action]').forEach((f) => add(dom.getAttribute(f, 'action'), true));
     return out;
   }
 
@@ -102,14 +102,14 @@
     const out = [];
     const params = [...new URL(location.href).searchParams].filter(([, v]) => v.length >= 4 && !/^\d+$/.test(v)).slice(0, 10);
     if (!params.length) return out;
-    const scripts = [...document.querySelectorAll('script:not([src])')].map((s) => s.textContent || '');
+    const scripts = [...document.querySelectorAll('script:not([src])')].map((s) => dom.textContent(s) || '');
     const all = [...document.querySelectorAll('*')].slice(0, 5000);
     for (const [name, value] of params) {
       let context = null;
       if (scripts.some((t) => t.includes(value))) context = 'script';
       else {
         outer: for (const el of all) {
-          for (const a of el.attributes) {
+          for (const a of dom.attributes(el)) {
             if (!a.value.includes(value)) continue;
             context = /^(on|href$|src$|srcdoc$|formaction$|action$)/i.test(a.name) ? 'attribute-active' : 'attribute';
             break outer;
@@ -135,20 +135,20 @@
     const html = document.documentElement.outerHTML.slice(0, HTML_MAX);
 
     const forms = [...document.forms].slice(0, LIST_MAX).map((f) => {
-      const action = f.getAttribute('action');
+      const action = dom.getAttribute(f, 'action');
       const target = safe(() => new URL(action || '', document.baseURI));
-      const fieldNames = [...f.elements].map((e) => (e.name || '') + ' ' + (e.id || ''));
-      const method = (f.getAttribute('method') || 'get').toLowerCase();
-      const textInputs = f.querySelectorAll('input:not([type=hidden]):not([type=submit]):not([type=button])').length;
+      const fieldNames = [...dom.formElements(f)].map((e) => (e.name || '') + ' ' + (e.id || ''));
+      const method = (dom.getAttribute(f, 'method') || 'get').toLowerCase();
+      const textInputs = dom.querySelectorAll(f, 'input:not([type=hidden]):not([type=submit]):not([type=button])').length;
       return {
         action: target ? target.origin + target.pathname : '',
         method,
-        hasPassword: !!f.querySelector('input[type=password]'),
+        hasPassword: !!dom.querySelector(f, 'input[type=password]'),
         insecureAction: !!target && target.protocol === 'http:' && https,
         crossOrigin: !!target && target.origin !== location.origin,
         hasCsrfToken: fieldNames.some((n) => CSRF_FIELD.test(n)) || !!document.querySelector('meta[name*="csrf" i], meta[name*="xsrf" i]'),
-        hasFile: !!f.querySelector('input[type=file]'),
-        isSearch: f.getAttribute('role') === 'search' || !!f.querySelector('input[type=search]') || (method === 'get' && textInputs === 1),
+        hasFile: !!dom.querySelector(f, 'input[type=file]'),
+        isSearch: dom.getAttribute(f, 'role') === 'search' || !!dom.querySelector(f, 'input[type=search]') || (method === 'get' && textInputs === 1),
       };
     });
 
@@ -171,7 +171,7 @@
     const iframes = [...document.querySelectorAll('iframe[src]')].slice(0, LIST_MAX).map((f) => ({
       src: plainUrl(f.src),
       thirdParty: originOf(f.src) !== location.origin,
-      sandbox: f.hasAttribute('sandbox'),
+      sandbox: dom.hasAttribute(f, 'sandbox'),
     }));
 
     const mixed = https
@@ -186,7 +186,7 @@
     let javascriptUrls = 0;
     for (const el of document.querySelectorAll('*')) {
       if (DF.kit.isOwn(el)) continue;
-      for (const a of el.attributes) {
+      for (const a of dom.attributes(el)) {
         if (/^on/i.test(a.name)) inlineHandlers++;
         else if (/^(href|src|action|formaction)$/i.test(a.name) && /^\s*javascript:/i.test(a.value)) javascriptUrls++;
       }
@@ -196,7 +196,7 @@
     const inlineScripts = [];
     let total = 0;
     document.querySelectorAll('script:not([src])').forEach((s, i) => {
-      const code = s.textContent || '';
+      const code = dom.textContent(s) || '';
       for (const k of SINKS) if (code.includes(k)) sinks.add(k);
       if (code.length && total < INLINE_TOTAL) {
         const text = code.slice(0, INLINE_MAX);
@@ -416,5 +416,100 @@
     }
   }
 
-  DF.extend({ secFacts, secBegin, secRequest, secStatus, secCancel, secEnd, secHeaderNames: () => HEADER_NAMES });
+  /*
+   * What the page loads, for the CSP and Subresource Integrity helpers in the Security tab. The
+   * result holds origins and hashes of inline code. Inline code itself is never returned. `tags` lists
+   * third-party scripts and stylesheets, with the few attributes the helper needs to rewrite them.
+   */
+  async function secCspFacts() {
+    const loaded = { script: new Set(), style: new Set(), img: new Set(), font: new Set(), connect: new Set(), media: new Set(), frame: new Set() };
+    const addUrl = (kind, u) => {
+      if (!u) return;
+      if (/^data:/i.test(u)) return void loaded[kind].add('data:');
+      if (/^blob:/i.test(u)) return void loaded[kind].add('blob:');
+      const x = safe(() => new URL(u, document.baseURI));
+      if (x && /^(https?|wss?):$/.test(x.protocol)) loaded[kind].add(x.origin);
+    };
+    const attr = (el, n) => dom.getAttribute(el, n);
+    document.querySelectorAll('script[src]').forEach((el) => addUrl('script', attr(el, 'src')));
+    document.querySelectorAll('link[rel~="stylesheet"][href]').forEach((el) => addUrl('style', attr(el, 'href')));
+    document.querySelectorAll('img[src], link[rel~="icon"][href], input[type="image"][src]').forEach((el) => addUrl('img', attr(el, 'src') || attr(el, 'href')));
+    document.querySelectorAll('img[srcset], source[srcset]').forEach((el) => (attr(el, 'srcset') || '').split(',').forEach((c) => addUrl('img', c.trim().split(/\s+/)[0])));
+    document.querySelectorAll('video[src], audio[src], source[src], track[src]').forEach((el) => addUrl('media', attr(el, 'src')));
+    document.querySelectorAll('iframe[src]').forEach((el) => addUrl('frame', attr(el, 'src')));
+    const ext = (u) => ((safe(() => new URL(u).pathname, '').match(/\.([a-z0-9]+)$/i) || [])[1] || '').toLowerCase();
+    const FONT = /^(woff2?|ttf|otf|eot)$/;
+    const IMG = /^(png|jpe?g|gif|webp|avif|svg|ico|bmp)$/;
+    const MEDIA = /^(mp4|webm|mp3|ogg|wav|m4a)$/;
+    for (const e of performance.getEntriesByType('resource')) {
+      const k = ext(e.name);
+      const kind =
+        e.initiatorType === 'script' ? 'script'
+          : e.initiatorType === 'link' ? (k === 'css' ? 'style' : FONT.test(k) ? 'font' : k === 'js' ? 'script' : IMG.test(k) ? 'img' : null)
+            : e.initiatorType === 'css' || e.initiatorType === 'other' ? (FONT.test(k) ? 'font' : IMG.test(k) ? 'img' : k === 'css' ? 'style' : k === 'js' || k === 'mjs' ? 'script' : MEDIA.test(k) ? 'media' : null)
+              : e.initiatorType === 'img' || e.initiatorType === 'image' ? 'img'
+                : /^(fetch|xmlhttprequest|beacon)$/.test(e.initiatorType) ? 'connect'
+                  : /^(iframe|frame)$/.test(e.initiatorType) ? 'frame'
+                    : /^(audio|video|track)$/.test(e.initiatorType) ? 'media'
+                      : null;
+      if (kind) addUrl(kind, e.name);
+    }
+
+    const sha256 = async (text) => {
+      const d = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
+      let s = '';
+      for (const b of d) s += String.fromCharCode(b);
+      return btoa(s);
+    };
+    const RUNS = /^(|module|importmap|(text|application)\/(x-)?(java|ecma)script)$/i;
+    const scripts = [];
+    for (const el of [...document.querySelectorAll('script:not([src])')].slice(0, 100)) {
+      if (RUNS.test(attr(el, 'type') || '') && dom.textContent(el)) scripts.push(await sha256(dom.textContent(el)));
+    }
+    const styles = [];
+    for (const el of [...document.querySelectorAll('style')].slice(0, 100)) if (dom.textContent(el)) styles.push(await sha256(dom.textContent(el)));
+    let handlers = 0;
+    let styleAttributes = 0;
+    const w = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_ELEMENT);
+    let n = 0;
+    while (w.nextNode() && n++ < 20000) {
+      const el = w.currentNode;
+      if (dom.hasAttribute(el, 'style')) styleAttributes++;
+      for (const a of dom.attributes(el)) {
+        if (/^on/i.test(a.name)) {
+          handlers++;
+          break;
+        }
+      }
+    }
+    const forms = new Set();
+    document.querySelectorAll('form[action]').forEach((f) => {
+      const x = safe(() => new URL(attr(f, 'action'), document.baseURI));
+      if (x && /^https?:$/.test(x.protocol)) forms.add(x.origin);
+    });
+
+    const tags = [];
+    const third = (u) => {
+      const x = safe(() => new URL(u, document.baseURI));
+      return x && /^https?:$/.test(x.protocol) && x.origin !== location.origin ? x.href : null;
+    };
+    document.querySelectorAll('script[src]').forEach((el) => {
+      const url = third(attr(el, 'src'));
+      if (url && tags.length < 60) tags.push({ tag: 'script', url, existing: attr(el, 'integrity') || '', crossorigin: attr(el, 'crossorigin'), attrs: { type: attr(el, 'type'), async: dom.hasAttribute(el, 'async'), defer: dom.hasAttribute(el, 'defer'), nomodule: dom.hasAttribute(el, 'nomodule') } });
+    });
+    document.querySelectorAll('link[rel~="stylesheet"][href]').forEach((el) => {
+      const url = third(attr(el, 'href'));
+      if (url && tags.length < 60) tags.push({ tag: 'link', url, existing: attr(el, 'integrity') || '', crossorigin: attr(el, 'crossorigin'), attrs: { media: attr(el, 'media') } });
+    });
+
+    return {
+      origin: location.origin,
+      loaded: Object.fromEntries(Object.entries(loaded).map(([k, v]) => [k, [...v].slice(0, 100)])),
+      inline: { scripts, styles, handlers, styleAttributes },
+      forms: [...forms].slice(0, 50),
+      tags,
+    };
+  }
+
+  DF.extend({ secFacts, secCspFacts, secBegin, secRequest, secStatus, secCancel, secEnd, secHeaderNames: () => HEADER_NAMES });
 })();

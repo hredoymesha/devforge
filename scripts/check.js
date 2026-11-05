@@ -91,6 +91,40 @@ if (agentVersion(core) !== agentVersion(agentSrc)) {
   );
 }
 
+// Wording: filler words in the docs, interface strings and comments (scripts/style-check.js).
+problems.push(...require('./style-check.js').run(root));
+
+// One version everywhere: the manifest, both npm files and the newest changelog heading.
+const versionOf = (file, pick) => {
+  try {
+    return pick(fs.readFileSync(path.join(root, file), 'utf8'));
+  } catch (_) {
+    return undefined;
+  }
+};
+const versions = {
+  'manifest.json': manifest.version,
+  'package.json': versionOf('package.json', (t) => JSON.parse(t).version),
+  'package-lock.json': versionOf('package-lock.json', (t) => JSON.parse(t).version),
+  'package-lock.json (root package)': versionOf('package-lock.json', (t) => JSON.parse(t).packages[''].version),
+  'newest CHANGELOG.md heading': versionOf('CHANGELOG.md', (t) => (t.match(/^## (\d+\.\d+\.\d+)\s*$/m) || [])[1]),
+};
+if (new Set(Object.values(versions)).size !== 1) problems.push('versions differ: ' + Object.entries(versions).map(([k, v]) => k + '=' + v).join(', '));
+
+// Vendored third-party files must stay byte-for-byte what was published. Each hash below was
+// compared with the file inside the upstream npm package (acorn 8.18.0 dist/acorn.js; js-beautify
+// 1.15.3 and 1.15.4 ship the same js/lib/beautifier.min.js). To update one, replace the file with the
+// new release, check it against the package, then change the hash and the version in the README.
+const VENDORED = {
+  'lib/acorn.js': 'fc3ed7b81e58464715d0291402892f22c3d86ea75302645a330390f85d8015c9',
+  'lib/beautifier.min.js': 'b65a96529bb399195df6209af009398ded3ecc1fe09d097f6a9f0056540adf54',
+};
+const sha256 = (file) => require('node:crypto').createHash('sha256').update(fs.readFileSync(path.join(root, file))).digest('hex');
+for (const [file, want] of Object.entries(VENDORED)) {
+  if (!fs.existsSync(path.join(root, file))) problems.push(`${file} is missing`);
+  else if (sha256(file) !== want) problems.push(`${file} does not match its recorded SHA-256. Vendored files are not edited; see scripts/check.js`);
+}
+
 if (problems.length) {
   console.error(problems.map((p) => '✗ ' + p).join('\n'));
   process.exit(1);

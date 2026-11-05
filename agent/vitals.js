@@ -10,7 +10,7 @@
 (() => {
   const DF = window.__DF;
   if (!DF || DF.vitals) return;
-  const { handleOf, label, clip, onDestroy } = DF.kit;
+  const { handleOf, label, clip, onDestroy, dom } = DF.kit;
 
   const THRESHOLDS = {
     lcp: [2500, 4000],
@@ -51,7 +51,7 @@
 
   const nodeInfo = (node) => {
     if (!node) return null;
-    const el = node.nodeType === 1 ? node : node.parentElement;
+    const el = dom.nodeType(node) === 1 ? node : dom.parentElement(node);
     if (!el || !el.isConnected) return { label: label(node), h: null };
     return { label: label(el), h: handleOf(el) };
   };

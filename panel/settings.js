@@ -235,6 +235,13 @@ registerTab('settings', 'Settings', async (v) => {
       )
     ),
     section(
+      'Stored data',
+      h('div', { class: 'sev-info' }, 'DevForge checks what it saved in this browser (settings, interception rules, performance history, Workspace) before it uses it. Anything that is not valid is ignored and listed here.'),
+      DF.state.stored.ignored.length
+        ? h('ul', { id: 'stored-ignored' }, ...DF.state.stored.ignored.map((t) => h('li', null, t)))
+        : h('div', { id: 'stored-ok', class: 'sev-ok' }, 'Nothing was ignored.')
+    ),
+    section(
       'In-panel shortcuts',
       h(
         'div',

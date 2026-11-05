@@ -71,7 +71,8 @@ registerTab('export', 'Export', async (v) => {
             const found = paths.map((p) => r.files.find((x) => x.path === p)).filter(Boolean);
             if (!found.length) throw new Error('This part has no ' + label + ' to export.');
             const data = found.length === 1 ? found[0].data : found.map((f) => '/* ' + f.path + ' */\n' + f.data).join('\n');
-            download(r.name + '-' + paths[0].split('/').pop().replace(/^.*(\.\w+)$/, (m, x) => (found.length > 1 ? 'all' + x : m)), data, type);
+            const fileName = r.name + '-' + paths[0].split('/').pop().replace(/^.*(\.\w+)$/, (m, x) => (found.length > 1 ? 'all' + x : m));
+            await saveGuarded(fileName, data, type);
           },
         },
       },
@@ -108,7 +109,9 @@ registerTab('export', 'Export', async (v) => {
               click: async () => {
                 const r = await busy('Building the export', (step) => buildElementPackage(sel, opts(), step));
                 const root = (r.page ? 'page-' : 'part-') + r.name;
-                download(root + '-' + stamp() + '.zip', DFZip.build(r.files.map((f) => ({ path: root + '/' + f.path, data: f.data }))), 'application/zip');
+                const safe = await guardFiles(r.files);
+                if (!safe) return;
+                download(root + '-' + stamp() + '.zip', await DFZip.buildAsync(safe.map((f) => ({ path: root + '/' + f.path, data: f.data }))), 'application/zip');
                 if (optSave.checked && !r.page) await saveToWorkspace('component', DF.state.info.selectors[0].selector, { html: r.c.html, css: r.c.css });
                 status((r.page ? 'Page' : 'Part') + ' export: ' + r.files.length + ' files. Start with README.md.', 'ok');
               },
@@ -134,7 +137,7 @@ registerTab('export', 'Export', async (v) => {
           {
             on: {
               click: async () =>
-                download('page-' + stamp() + '.html', await call('fullDom'), 'text/html'),
+                saveGuarded('page-' + stamp() + '.html', await call('fullDom'), 'text/html'),
             },
           },
           'Complete DOM (HTML)'
@@ -145,7 +148,7 @@ registerTab('export', 'Export', async (v) => {
             on: {
               click: async () => {
                 const r = await call('resourceMap');
-                download(
+                saveGuarded(
                   'resources-' + stamp() + '.json',
                   JSON.stringify(r, null, 2),
                   'application/json'
@@ -161,7 +164,7 @@ registerTab('export', 'Export', async (v) => {
             on: {
               click: async () => {
                 const r = await call('extractData', 'metadata');
-                download('metadata.json', JSON.stringify(r, null, 2), 'application/json');
+                await saveGuarded('metadata.json', JSON.stringify(r, null, 2), 'application/json');
               },
             },
           },
@@ -173,7 +176,7 @@ registerTab('export', 'Export', async (v) => {
             on: {
               click: async () => {
                 const s = await call('scriptsInfo');
-                download('scripts.json', JSON.stringify(s, null, 2), 'application/json');
+                await saveGuarded('scripts.json', JSON.stringify(s, null, 2), 'application/json');
               },
             },
           },
@@ -227,9 +230,11 @@ registerTab('export', 'Export', async (v) => {
                     files.push({ path: base + '/styles.css', data: it.payload.css });
                   files.push({ path: base + '/item.json', data: JSON.stringify(it, null, 2) });
                 });
+                const safe = await guardFiles(files);
+                if (!safe) return;
                 download(
                   'project-' + slug(p.name) + '-' + stamp() + '.zip',
-                  DFZip.build(files),
+                  await DFZip.buildAsync(safe),
                   'application/zip'
                 );
               },

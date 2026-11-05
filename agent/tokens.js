@@ -6,7 +6,7 @@
 (() => {
   const DF = window.__DF;
   if (!DF || DF.designTokens) return;
-  const { target, isOwn, allSheets, MAX_NODES } = DF.kit;
+  const { target, isOwn, allSheets, MAX_NODES, dom } = DF.kit;
 
   // Normalises rgb()/rgba() to #rrggbb or #rrggbbaa and returns null for transparent. Wide-gamut
   // values (oklch(), color(display-p3 …)) are kept verbatim rather than squashed into sRGB.
@@ -86,13 +86,13 @@
     while (el && scanned < Math.min(MAX_NODES, 8000)) {
       if (
         !isOwn(el) &&
-        !/^(SCRIPT|STYLE|LINK|META|HEAD|TITLE|NOSCRIPT|TEMPLATE)$/.test(el.tagName)
+        !/^(SCRIPT|STYLE|LINK|META|HEAD|TITLE|NOSCRIPT|TEMPLATE)$/.test(dom.tagName(el))
       ) {
-        const r = el.getBoundingClientRect();
+        const r = dom.getBoundingClientRect(el);
         const cs = getComputedStyle(el);
         if ((r.width || r.height) && cs.display !== 'none' && cs.visibility !== 'hidden') {
           scanned++;
-          const hasText = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+          const hasText = [...dom.childNodes(el)].some((n) => dom.nodeType(n) === 3 && dom.textContent(n).trim());
           if (hasText) {
             tally(colors, toHex(cs.color), 'text');
             tally(

@@ -1,6 +1,6 @@
 {
   "name": "devforge",
-  "version": "4.2.0",
+  "version": "4.3.0",
   "private": true,
   "description": "DevForge Chrome extension. No build step; this file only holds the dev scripts.",
   "license": "MIT",
@@ -10,6 +10,7 @@
     "test": "node --test",
     "verify": "npm run check && npm test",
     "verify:all": "npm run lint && npm run verify",
+    "package": "node scripts/package.js",
     "e2e": "node e2e/run.js",
     "a11y": "node e2e/a11y.js",
     "e2e:features": "node e2e/features.js",
