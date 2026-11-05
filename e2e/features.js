@@ -976,7 +976,7 @@ async function main() {
       check('a sensitive action asks for the passphrase again (modal dialog)', (await panel.locator('.owner-stepup[role="dialog"][aria-modal="true"]').count()) === 1);
       await panel.fill('#owner-stepup-pass', 'wrong passphrase here');
       await panel.click('#owner-stepup-go');
-      await panel.waitForFunction(() => /not correct/.test(document.querySelector('#owner-stepup-msg').textContent));
+      await panel.waitForFunction(() => /not correct/.test(((document.querySelector('#owner-stepup-msg') || {}).textContent || '')));
       check('a wrong passphrase is refused and stays on the dialog', (await panel.locator('.owner-stepup').count()) === 1);
       await panel.fill('#owner-stepup-pass', OLD);
       await panel.click('#owner-stepup-go');
@@ -1006,25 +1006,25 @@ async function main() {
       await panel.fill('#owner-new', NEW);
       await panel.fill('#owner-new2', NEW);
       await panel.click('#owner-change-go');
-      await panel.waitForFunction(() => document.querySelector('#owner-change-msg').textContent.length > 0);
+      await panel.waitForFunction(() => ((document.querySelector('#owner-change-msg') || {}).textContent || '').length > 0);
       check('changing the passphrase needs the current one', /not correct/.test(await panel.locator('#owner-change-msg').innerText()));
       await panel.fill('#owner-cur', OLD);
       await panel.fill('#owner-new', 'short');
       await panel.fill('#owner-new2', 'short');
       await panel.click('#owner-change-go');
-      await panel.waitForFunction(() => document.querySelector('#owner-change-msg').textContent.length > 0);
+      await panel.waitForFunction(() => ((document.querySelector('#owner-change-msg') || {}).textContent || '').length > 0);
       check('a weak new passphrase is refused', /at least 12/.test(await panel.locator('#owner-change-msg').innerText()));
       await panel.fill('#owner-cur', OLD);
       await panel.fill('#owner-new', OLD);
       await panel.fill('#owner-new2', OLD);
       await panel.click('#owner-change-go');
-      await panel.waitForFunction(() => document.querySelector('#owner-change-msg').textContent.length > 0);
+      await panel.waitForFunction(() => ((document.querySelector('#owner-change-msg') || {}).textContent || '').length > 0);
       check('the new passphrase must differ from the old one', /different/.test(await panel.locator('#owner-change-msg').innerText()));
       await panel.fill('#owner-cur', OLD);
       await panel.fill('#owner-new', NEW);
       await panel.fill('#owner-new2', NEW);
       await panel.click('#owner-change-go');
-      await panel.waitForFunction(() => document.querySelector('#owner-change-ok').textContent || document.querySelector('#owner-change-msg').textContent, null, { timeout: 90000 });
+      await panel.waitForFunction(() => ((document.querySelector('#owner-change-ok') || {}).textContent || '') || ((document.querySelector('#owner-change-msg') || {}).textContent || ''), null, { timeout: 90000 });
       check('the change succeeds and says what was re-sealed', /Re-sealed 1 diagnostic record/.test(await panel.locator('#owner-change-ok').innerText()), (await panel.locator('#owner-change-ok').innerText()) + ' / ' + (await panel.locator('#owner-change-msg').innerText()));
       check('the password fields are cleared afterwards', (await panel.inputValue('#owner-cur')) === '' && (await panel.inputValue('#owner-new')) === '');
 
