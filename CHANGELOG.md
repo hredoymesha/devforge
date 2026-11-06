@@ -73,6 +73,16 @@
   downloads and the Security scan, so a page could hide code from them by using that id.
 - Pick mode stayed on after the panel was closed, and kept swallowing the page's mouse events until Esc.
   The page agent now ends it when the panel goes away.
+- The browser tests failed on GitHub with Chrome 158 although they passed on older Chrome: newer Chrome
+  reports every inline event handler attribute it sees while parsing a page, even in a copy that never runs
+  it. The Site rewrite and the exports parse page markup on purpose, so those two test sessions now set
+  these reports apart (`e2e/violations.js`, with its own unit test). Every other refusal still fails the
+  test, and the panel itself is unchanged.
+- The Owner passphrase-change test no longer fails when the message box is briefly missing.
+- Test failures now say where each CSP refusal came from (source, line, column).
+- Development only: `minimatch` is pinned to 11.0.5 with an npm override. ESLint pulled in 10.2.6, which has
+  a published advisory (denial of service from crafted patterns). DevForge never passes untrusted patterns to
+  it, and nothing of it ships in the extension.
 
 ### Tests
 - New property and fuzz tests with seeded hostile input and time budgets (`test/fuzz.test.js`,

@@ -10,6 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { startFixtures } = require('./fixtures.js');
+const { splitReports } = require('./violations.js');
 
 function loadPlaywright() {
   for (const id of ['playwright', process.env.PLAYWRIGHT_MODULE, '/opt/node-tools/node_modules/playwright']) {
@@ -43,7 +44,8 @@ async function launch(extDir, profile) {
   return { ctx, sw, id: sw.url().split('/')[2] };
 }
 
-async function openPanel(env, targetUrl) {
+// parsesPageMarkup: this session parses page markup in the panel on purpose (see violations.js).
+async function openPanel(env, targetUrl, opts = {}) {
   const target = await env.ctx.newPage();
   await target.goto(targetUrl);
   const pattern = targetUrl.replace(/[?#].*$/, '').replace(/\/$/, '') + '/*';
@@ -76,7 +78,8 @@ async function openPanel(env, targetUrl) {
   const close = panel.close.bind(panel);
   panel.close = async () => {
     const ttv = await panel.evaluate(() => window.__ttv || []).catch(() => []);
-    check('no Trusted Types violation in this panel session', ttv.length === 0, ttv.length + ' refusal(s), first 5: ' + ttv.slice(0, 5).join(' | '));
+    const failing = opts.parsesPageMarkup ? splitReports(ttv).other : ttv;
+    check('no Trusted Types violation in this panel session', failing.length === 0, failing.length + ' refusal(s), first 5: ' + failing.slice(0, 5).join(' | '));
     await close();
     await target.close();
   };
@@ -182,7 +185,7 @@ async function main() {
       const r = gen.rng(seed);
       // The clean single-page app sends a CSP that blocks inline handlers, so the hostile markup
       // cannot run in the target page while the agent reads it.
-      const { panel, target } = await openPanel(env, `http://127.0.0.1:${fx.spa.port}/`);
+      const { panel, target } = await openPanel(env, `http://127.0.0.1:${fx.spa.port}/`, { parsesPageMarkup: true });
       target.on('dialog', (d) => d.dismiss());
       await panel.evaluate(() => call('ping'));
       const broken = [];

@@ -9,6 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { startFixtures, FAKE } = require('./fixtures.js');
+const { splitReports } = require('./violations.js');
 
 function loadPlaywright() {
   for (const id of ['playwright', process.env.PLAYWRIGHT_MODULE, '/opt/node-tools/node_modules/playwright']) {
@@ -61,7 +62,9 @@ async function openPanel(env, targetUrl) {
   // Trusted Types: the panel's CSP refuses plain strings at HTML sinks. Record every refusal.
   await panel.addInitScript(() => {
     window.__ttv = [];
-    document.addEventListener('securitypolicyviolation', (e) => window.__ttv.push(e.violatedDirective + ' ' + (e.sample || '')));
+    document.addEventListener('securitypolicyviolation', (e) =>
+      window.__ttv.push(e.violatedDirective + ' ' + (e.sample || '') + ' [' + (e.sourceFile || 'no source') + ':' + e.lineNumber + ':' + e.columnNumber + ' blocked=' + e.blockedURI + ']')
+    );
   });
   const errors = [];
   panel.on('pageerror', (e) => errors.push(e.message));
@@ -72,7 +75,9 @@ async function openPanel(env, targetUrl) {
   const close = panel.close.bind(panel);
   panel.close = async () => {
     const ttv = await panel.evaluate(() => window.__ttv || []).catch(() => []);
-    check('no Trusted Types violation in this panel session', ttv.length === 0, ttv.join(' | '));
+    // Every session here exports pages, and exporting parses their markup in the panel.
+    const failing = splitReports(ttv).other;
+    check('no Trusted Types violation in this panel session', failing.length === 0, failing.length + ' refusal(s), first 5: ' + failing.slice(0, 5).join(' | '));
     await close();
     await target.close();
   };
