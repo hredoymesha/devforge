@@ -73,3 +73,17 @@ test('an empty set of findings is still a valid log with no results', () => {
   assert.deepEqual(doc.runs[0].results, []);
   assert.deepEqual(D.validateSarif(doc), []);
 });
+
+test('the checker reports a malformed document instead of throwing', () => {
+  const bad = [
+    { version: '2.1.0', runs: [null] },
+    { version: '2.1.0', runs: [{ tool: { driver: { name: 'x', rules: [null, 5] } }, results: [null, { message: { text: 'a' }, ruleId: 'r', level: 'note', locations: [null, 7] }] }] },
+    { version: '2.1.0', runs: 'no' },
+    { version: '2.1.0', runs: [{ tool: null, results: 'no' }] },
+  ];
+  for (const doc of bad) {
+    let problems;
+    assert.doesNotThrow(() => { problems = D.validateSarif(doc); });
+    assert.ok(Array.isArray(problems) && problems.length > 0);
+  }
+});

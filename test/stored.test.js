@@ -169,7 +169,7 @@ test('rules: a stored value that is not a list is ignored, and the list is cappe
 });
 
 test('rules: odd header names and values are dropped, and the total size is bounded', () => {
-  const r = S.rules([rule({ action: 'mock', status: 200, body: 'ok', headers: { 'good-name': 'v', 'bad name': 'v', 'x-n': 5, __proto__: 'x' } })]);
+  const r = S.rules([rule({ action: 'mock', status: 200, body: 'ok', headers: JSON.parse('{"good-name":"v","bad name":"v","x-n":5,"__proto__":"x"}') })]);
   assert.deepEqual(r.value[0].headers, { 'good-name': 'v' });
   const big = Array.from({ length: 5 }, (_, i) => rule({ action: 'mock', status: 200, match: '/' + i, body: 'x'.repeat(900000) }));
   const b = S.rules(big);

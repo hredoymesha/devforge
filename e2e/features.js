@@ -497,6 +497,31 @@ async function main() {
       await panel.close();
     }
 
+    console.log('\nSecurity: the page agent returns nothing');
+    if (run('SecNoFacts')) {
+      const { panel, target, errors } = await openPanel(env, vuln);
+      await panel.evaluate(async () => {
+        SEC.view = 'setup';
+        SEC.report = null;
+        show('security');
+        await ensureAgent();
+        await exec(() => {
+          window.__DF.secFacts = () => undefined;
+        });
+      });
+      await panel.waitForSelector('#sec-lv-passive');
+      await panel.check('#sec-lv-passive');
+      await panel.click('button:has-text("Start scan")');
+      await panel.waitForSelector('.sev-error[role="alert"]', { timeout: 60000 });
+      const alert = await panel.locator('.sev-error[role="alert"]').innerText();
+      check('the scan stops and says the page agent returned nothing', /The scan could not run\. The page agent returned nothing for this page, so the scan stopped\./.test(alert), alert);
+      check('the message is not a raw script error', !/Cannot read|null|undefined/i.test(alert), alert);
+      check('no report is shown or kept for the failed scan', (await panel.evaluate(() => SEC.report)) === null && (await panel.locator('.sec-banner').count()) === 0);
+      check('no page errors in the panel', errors.length === 0, errors.join(' | '));
+      await target.close();
+      await panel.close();
+    }
+
     console.log('\nSecurity: check one finding again');
     if (run('Recheck')) {
       const { panel, target, errors } = await openPanel(env, vuln);

@@ -427,6 +427,23 @@ async function main() {
     const idx = zipRead(siteZip, 'index.html');
     check('index.html in the ZIP points at the local copy of the stylesheet', /href="[^"]*site\.css/.test(idx) && !/href="http:\/\/127\.0\.0\.1:\d+\/demo\/site\.css"/.test(idx), (idx.match(/<link[^>]*>/g) || []).join(' '));
 
+    console.log('\nSite ZIP when the page agent returns nothing for the page');
+    await panel.evaluate(async () => {
+      await ensureAgent();
+      await exec(() => {
+        const real = window.__DF.elementFacts;
+        window.__DF.elementFacts = (h) => (h === '@page' ? undefined : real(h));
+      });
+    });
+    const bareZip = await saveDownload(panel, () => panel.click('#site-go'), scratch, 'site-no-facts.zip');
+    const bn = zipList(bareZip);
+    const bareReport = JSON.parse(zipRead(bareZip, '_devforge/report.json'));
+    const pageData = bareReport.resources.filter((r) => r.kind === 'page-data');
+    check('the report says why the page data is missing', pageData.length === 1 && pageData[0].status === 'failed' && /^The page agent returned nothing for this page/.test(pageData[0].reason), JSON.stringify(pageData));
+    check('the page data and overview files are left out, the rest of the ZIP is still made', !bn.includes('data/page.json') && !bn.includes('docs/OVERVIEW.md') && bn.includes('index.html') && bn.includes('README.md') && bn.some((n) => /app\.js$/.test(n)), bn.join(', '));
+    const bareReadme = zipRead(bareZip, 'README.md');
+    check('the README falls back to the host name and lists the reason', /^# 127\.0\.0\.1/.test(bareReadme) && /The page agent returned nothing for this page/.test(bareReadme), bareReadme.slice(0, 300));
+
     check('no page errors in the panel', errors.length === 0, errors.join(' | '));
     await target.close();
     await panel.close();

@@ -2314,7 +2314,7 @@
     };
     let curBase = document.baseURI;
     const fontUrls = [];
-    const walk = (list, wrap) => {
+    const walk = (list) => {
       let out = '';
       for (const rule of list) {
         if (rule.type === 1) {
@@ -2328,7 +2328,7 @@
           rule.constructor.name === 'CSSContainerRule' ||
           rule.constructor.name === 'CSSLayerBlockRule'
         ) {
-          const inner = walk(rule.cssRules, true);
+          const inner = walk(rule.cssRules);
           if (inner)
             out +=
               rule.cssText.split('{')[0].trim() +
@@ -2361,7 +2361,7 @@
         return;
       }
       curBase = sheet.href || document.baseURI;
-      const part = walk(r, false);
+      const part = walk(r);
       if (part && !ruleSeen.has(part)) {
         ruleSeen.add(part);
         css += `/* source: ${sheetLabel(sheet, i).replace(/\*\//g, '* /').replace(/[\r\n]+/g, ' ')} */\n${part}\n`;
@@ -2786,7 +2786,7 @@
 
   const CURRENT_COLOR_NOISE =
     /^(column-rule-color|outline-color|text-decoration-color|text-emphasis-color|caret-color)$/;
-  function collapse4(d, a, b, c, e, name, keep) {
+  function collapse4(d, a, b, c, e, name) {
     const keys = [a, b, c, e];
     if (keys.every((k) => d[k] != null) && new Set(keys.map((k) => d[k])).size === 1) {
       d[name] = d[a];

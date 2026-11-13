@@ -398,6 +398,7 @@ async function runSiteDownload(opts, ui) {
   let facts = null;
   try {
     facts = await call('elementFacts', '@page');
+    if (!facts) throw new Error('The page agent returned nothing for this page, so its title, headings and metadata were not saved. Reload the page and export again.');
     const meta = await call('extractData', 'metadata');
     extra.push({
       path: 'data/page.json',

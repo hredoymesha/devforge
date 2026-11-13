@@ -278,7 +278,7 @@ async function buildBundle(ids, wsIds, opts, onStep) {
       report.push({ id: 'ws:' + it.id, item: 'Workspace: ' + it.title, status: 'ok', files: 1, problems: [] });
     }
   }
-  const manifest = { tool: 'DevForge ' + chrome.runtime.getManifest().version, page: opts.mask === false ? ctx.pageUrl : redactUrl(ctx.pageUrl), created: new Date().toISOString(), secretsMasked: ctx.mask, items: report, files: files.map((f) => ({ path: f.path, source: f.source || undefined, bytes: typeof f.data === 'string' ? f.data.length : f.data.length })) };
+  const manifest = { tool: 'DevForge ' + chrome.runtime.getManifest().version, page: opts.mask === false ? ctx.pageUrl : redactUrl(ctx.pageUrl), created: new Date().toISOString(), secretsMasked: ctx.mask, items: report, files: files.map((f) => ({ path: f.path, source: f.source || undefined, bytes: typeof f.data === 'string' ? new TextEncoder().encode(f.data).length : f.data.length })) };
   files.unshift({ path: '_manifest.json', data: JSON.stringify(manifest, null, 2) }, { path: 'README.md', data: bundleReadme(manifest) });
   return { files, report, manifest };
 }

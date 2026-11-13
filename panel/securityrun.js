@@ -106,6 +106,7 @@ async function secRunScan(opts) {
     /* ---- page contents (no requests) ---- */
     onStep('page', 'running');
     facts = await call('secFacts');
+    if (!facts) throw new Error('The page agent returned nothing for this page, so the scan stopped. Reload the page and scan again.');
     data.scripts.urls = facts.scripts.map((s) => s.src);
     data.scripts.inline = facts.inlineScripts || [];
     setCheck('page', 'done');

@@ -1,5 +1,25 @@
 # Changelog
 
+## 4.4.2
+
+### Fixed
+- A Security scan now stops with a plain message when the page agent returns nothing for the page. It
+  showed a raw script error before.
+- The Site ZIP records the same plain reason in `_devforge/report.json` and its README when the page agent
+  returns nothing for the page. The page data and overview files are left out; every other file is still
+  saved.
+
+## 4.4.1
+
+### Fixed
+- The SARIF checker no longer stops with an error when a file has an empty or wrongly typed run, rule, result
+  or location. It lists the problem instead.
+- The page bundle's `_manifest.json` now gives the real size in bytes for text files. It gave the number of
+  characters before, which is smaller for text with accents or non-Latin letters.
+- Two unused function parameters were removed from the page agent. Nothing changes for users.
+- The unit test for odd header names now builds a real `__proto__` key. Its old form only changed the object's
+  prototype, so it did not test what its name said.
+
 ## 4.4.0
 
 ### New
