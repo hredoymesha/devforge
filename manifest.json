@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DevForge — Web Dev Workbench",
-  "version": "4.3.0",
+  "version": "4.4.0",
   "description": "Local-first web dev workbench: inspector, network interception, Web Vitals, design tokens, exports and security checks.",
   "minimum_chrome_version": "116",
   "permissions": [

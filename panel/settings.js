@@ -60,6 +60,44 @@ function numberSetting(id, key, min, max, fallback, label) {
   return input;
 }
 
+// The local list of sites DevForge worked on. Clearing it asks first.
+function siteLogSection() {
+  const log = DF.state.siteLog || [];
+  return section(
+    'Sites DevForge worked on',
+    h('div', { class: 'sev-info' }, 'A list kept on this computer, with the last visit and the number of visits to each site. Only the address without its path is kept. Nothing is sent anywhere.'),
+    log.length
+      ? table(
+          ['Site', 'Last visit', 'Visits'],
+          log.map((e) => [mono(e.origin), new Date(e.last).toLocaleString(), String(e.count)]),
+          { class: 'compact' }
+        )
+      : h('div', { class: 'sev-info' }, 'No sites yet.'),
+    h(
+      'div',
+      { class: 'row' },
+      h(
+        'button',
+        {
+          id: 'site-log-clear',
+          disabled: !log.length,
+          on: {
+            click: () => {
+              if (!confirm('Clear the list of sites DevForge worked on? This cannot be undone.')) return;
+              DF.state.siteLog = [];
+              DF.state.lastSite = null;
+              chrome.storage.session.set({ siteLog: [] }).catch(() => {});
+              toast('List cleared');
+              show('settings');
+            },
+          },
+        },
+        'Clear list'
+      )
+    )
+  );
+}
+
 function siteAccessSection(s) {
   const listBox = h('div');
   const drawList = () => {
@@ -304,6 +342,7 @@ registerTab('settings', 'Settings', async (v) => {
       )
     ),
     siteAccessSection(s),
+    siteLogSection(),
     section(
       'Scan history',
       h(

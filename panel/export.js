@@ -51,12 +51,35 @@ async function developerReport() {
 }
 registerTab('export', 'Export', async (v) => {
   const sel = DF.state.h;
+  const cmpA = h('input', { type: 'file', accept: '.zip', id: 'cmp-a', 'aria-label': 'First ZIP' });
+  const cmpB = h('input', { type: 'file', accept: '.zip', id: 'cmp-b', 'aria-label': 'Second ZIP' });
+  const cmpOut = h('div', { id: 'cmp-out' });
+  const genTarget = h(
+    'select',
+    { id: 'el-gen-target', 'aria-label': 'Component type' },
+    [
+      ['react', 'React component (JSX and CSS)'],
+      ['vue', 'Vue single-file component'],
+      ['webcomponent', 'Web Component (shadow DOM)'],
+      ['react-project', 'React project (runs with Vite)'],
+    ].map(([k, l]) => h('option', { value: k }, l))
+  );
+  const genName = h('input', {
+    id: 'el-gen-name',
+    'aria-label': 'Component name',
+    value: sel ? slug(DF.state.info.tag + '-' + (DF.state.info.id || DF.state.info.classes[0] || 'component')) : 'component',
+  });
   const optAssets = h('input', { type: 'checkbox', id: 'opt-assets', checked: true }),
     optScripts = h('input', { type: 'checkbox', id: 'opt-scripts', checked: true }),
     optFormat = h('input', { type: 'checkbox', id: 'opt-format', checked: true }),
     optPreview = h('input', { type: 'checkbox', id: 'opt-preview', checked: true }),
-    optSave = h('input', { type: 'checkbox', id: 'opt-save' });
-  const opts = () => ({ assets: optAssets.checked, scripts: optScripts.checked, format: optFormat.checked, preview: optPreview.checked });
+    optSave = h('input', { type: 'checkbox', id: 'opt-save' }),
+    optWidths = h('input', { type: 'checkbox', id: 'opt-widths' }),
+    optEncrypt = h('input', { type: 'checkbox', id: 'opt-encrypt' }),
+    optLate = h('input', { type: 'checkbox', id: 'opt-late' }),
+    encPass = h('input', { type: 'password', id: 'enc-pass', autocomplete: 'new-password', 'aria-label': 'Passphrase for the encrypted ZIP' }),
+    encPass2 = h('input', { type: 'password', id: 'enc-pass2', autocomplete: 'new-password', 'aria-label': 'Repeat the passphrase' });
+  const opts = () => ({ assets: optAssets.checked, scripts: optScripts.checked, format: optFormat.checked, preview: optPreview.checked, responsive: optWidths.checked, late: optLate.checked });
   // One-file downloads reuse the package builder so every file has the same content as in the ZIP.
   const single = (label, id, pick, type) =>
     h(
@@ -94,6 +117,12 @@ registerTab('export', 'Export', async (v) => {
         h('label', null, optScripts, ' search page scripts for code that uses this part'),
         h('label', null, optFormat, ' format code (readable indentation)'),
         h('label', null, optPreview, ' include a preview picture'),
+        h('label', null, optWidths, ' capture 3 widths (resizes this browser window for a moment)'),
+        h('label', null, optLate, ' include resources that load after the page (start watching first)'),
+        h('button', { id: 'el-late-start', on: { click: startLateWatch } }, 'Start watching for late resources'),
+        h('label', null, optEncrypt, ' encrypt the full ZIP with a passphrase (at least 12 characters)'),
+        h('label', null, 'Passphrase ', encPass),
+        h('label', null, 'Repeat it ', encPass2),
         h('label', null, optSave, ' also save to workspace')
       ),
       h(
@@ -107,11 +136,23 @@ registerTab('export', 'Export', async (v) => {
             disabled: !sel,
             on: {
               click: async () => {
+                if (optEncrypt.checked && (encPass.value.length < DFEncExport.MIN_PASSPHRASE || encPass.value !== encPass2.value)) {
+                  toast(encPass.value.length < DFEncExport.MIN_PASSPHRASE ? 'Use a passphrase of at least ' + DFEncExport.MIN_PASSPHRASE + ' characters.' : 'The two passphrases do not match.');
+                  return;
+                }
                 const r = await busy('Building the export', (step) => buildElementPackage(sel, opts(), step));
                 const root = (r.page ? 'page-' : 'part-') + r.name;
                 const safe = await guardFiles(r.files);
                 if (!safe) return;
-                download(root + '-' + stamp() + '.zip', await DFZip.buildAsync(safe.map((f) => ({ path: root + '/' + f.path, data: f.data }))), 'application/zip');
+                const zip = await DFZip.buildAsync(safe.map((f) => ({ path: root + '/' + f.path, data: f.data })));
+                if (optEncrypt.checked) {
+                  const sealed = await DFEncExport.encrypt(new Uint8Array(await zip.arrayBuffer()), encPass.value);
+                  encPass.value = '';
+                  encPass2.value = '';
+                  download(root + '-' + stamp() + '.zip.devforge-enc', sealed, 'application/json');
+                } else {
+                  download(root + '-' + stamp() + '.zip', zip, 'application/zip');
+                }
                 if (optSave.checked && !r.page) await saveToWorkspace('component', DF.state.info.selectors[0].selector, { html: r.c.html, css: r.c.css });
                 status((r.page ? 'Page' : 'Part') + ' export: ' + r.files.length + ' files. Start with README.md.', 'ok');
               },
@@ -125,6 +166,34 @@ registerTab('export', 'Export', async (v) => {
         single('JavaScript', 'el-js', { path: ['js/handlers.js', 'js/inline-scripts.js', 'js/external-fragments.js'], scripts: true }, 'text/javascript'),
         single('Documentation', 'el-doc', { path: 'README.md' }, 'text/markdown'),
         single('Metadata', 'el-meta', { path: 'data/meta.json' }, 'application/json')
+      ),
+      h(
+        'div',
+        { class: 'row' },
+        h('label', { for: 'el-gen-target' }, 'Component code '),
+        genTarget,
+        genName,
+        h(
+          'button',
+          {
+            id: 'el-gen',
+            disabled: !sel,
+            on: {
+              click: async () => {
+                const name = genName.value.trim() || 'component';
+                const rec = await busy('Reading the part', () => call('recreate', sel));
+                const meta = { tool: chrome.runtime.getManifest().version, source: DF.state.info.selectors[0].selector, page: DF.state.url };
+                const files = DFGen.componentFiles(rec, genTarget.value, name, meta).files;
+                const safe = await guardFiles(files);
+                if (!safe) return;
+                const root = slug(name);
+                download('component-' + root + '-' + stamp() + '.zip', await DFZip.buildAsync(safe.map((f) => ({ path: root + '/' + f.path, data: f.data }))), 'application/zip');
+                status('Component written: ' + files.length + ' files. Start with README.md. The code was generated from the computed styles and needs a check against the original.', 'ok');
+              },
+            },
+          },
+          'Generate component (ZIP)'
+        )
       )
     ),
     section(
@@ -270,9 +339,67 @@ registerTab('export', 'Export', async (v) => {
         h('button', { on: { click: pixelDiff } }, '3. Compare')
       ),
       h('div', { id: 'diff-out' })
+    ),
+    section(
+      'Compare two exports',
+      h('div', { class: 'sev-info' }, 'Pick two ZIP files made by Export or Site. The report lists the files that were added, removed or changed. Nothing is uploaded.'),
+      h(
+        'div',
+        { class: 'row' },
+        h('label', null, 'First ZIP ', cmpA),
+        h('label', null, 'Second ZIP ', cmpB),
+        h('button', { id: 'cmp-run', class: 'primary', on: { click: () => compareExports(cmpA, cmpB, cmpOut) } }, 'Compare')
+      ),
+      cmpOut
     )
   );
 });
+
+// Starts the page agent's observers. Resources that load before this is pressed are only listed if
+// the browser still keeps their timing.
+async function startLateWatch() {
+  try {
+    const r = await call('lateStart');
+    toast(r.timingObserver ? 'Watching for resources that load now.' : 'Watching for new script, style and image elements. Timing for requests is not available here.');
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+// Two ZIPs as files, compared with lib/exportdiff.js. The report is shown here and can be saved
+// as Markdown or JSON; both saves go through the secrets check, because a report quotes page text.
+async function compareExports(inA, inB, out) {
+  const fa = inA.files[0];
+  const fb = inB.files[0];
+  clear(out);
+  if (!fa || !fb) {
+    out.append(h('div', { class: 'card sev-error' }, 'Choose two ZIP files first.'));
+    return;
+  }
+  try {
+    const res = await busy('Comparing the exports', async () => {
+      const ra = await DFZip.read(fa);
+      const rb = await DFZip.read(fb);
+      const r = await DFExportDiff.compare(ra.files, rb.files, { nameA: fa.name, nameB: fb.name });
+      return { r, skipped: [...ra.skipped.map((x) => ({ side: fa.name, ...x })), ...rb.skipped.map((x) => ({ side: fb.name, ...x }))] };
+    });
+    let md = DFExportDiff.toMarkdown(res.r);
+    if (res.skipped.length) md += '\nSkipped because the name is unsafe: ' + res.skipped.map((x) => '`' + x.name.replace(/`/g, "'") + '` in ' + x.side.replace(/`/g, "'")).join(', ') + '.\n';
+    const json = JSON.stringify({ ...res.r, skipped: res.skipped }, null, 2) + '\n';
+    const stampNow = stamp();
+    out.append(
+      h('div', { class: 'row' },
+        h('button', { on: { click: () => saveGuarded('comparison-' + stampNow + '.md', md, 'text/markdown') } }, icon('download', 13), ' Save Markdown'),
+        h('button', { on: { click: () => saveGuarded('comparison-' + stampNow + '.json', json, 'application/json') } }, icon('download', 13), ' Save JSON')
+      ),
+      h('pre', { class: 'code-box', id: 'cmp-md' }, md)
+    );
+    status('Comparison done: ' + res.r.summary.changed + ' changed, ' + res.r.summary.added + ' added, ' + res.r.summary.removed + ' removed.', 'ok');
+  } catch (e) {
+    out.append(h('div', { class: 'card sev-error' }, e.message));
+    status(e.message, 'err');
+  }
+}
 // Chrome allows two captureVisibleTab calls per second per extension; space them out.
 let lastCapture = 0;
 async function capture() {

@@ -475,6 +475,28 @@ async function main() {
     }
 
     /* ---------- check one finding again ---------- */
+    console.log('\nSecurity: SARIF file and ASVS chapters');
+    if (run('Sarif')) {
+      const { FAKE } = require('./fixtures.js');
+      const { panel, target, errors } = await openPanel(env, vuln);
+      const report = await runScan(panel, 'standard');
+      await panel.evaluate(() => SEC.go('export'));
+      const [sdl] = await Promise.all([panel.waitForEvent('download'), panel.click('#sec-sarif')]);
+      const sarifFile = path.join(scratch, 'report-export.sarif');
+      await sdl.saveAs(sarifFile);
+      const sarifText = fs.readFileSync(sarifFile, 'utf8');
+      const doc = JSON.parse(sarifText);
+      const SARIF = require('../lib/sarif.js');
+      check('the SARIF file passes its structure check and has one result per finding', SARIF.validateSarif(doc).length === 0 && doc.version === '2.1.0' && doc.runs[0].results.length === report.findings.length, SARIF.validateSarif(doc).join('; '));
+      check('the SARIF file holds no secret value from the test site', !Object.values(FAKE).some((v) => sarifText.includes(v)));
+      check('every SARIF result points at a rule the file lists', doc.runs[0].results.every((r) => doc.runs[0].tool.driver.rules.some((x) => x.id === r.ruleId)));
+      await panel.evaluate(() => SEC.go('coverage'));
+      check('the coverage view lists the ASVS chapters with a count of findings', (await panel.locator('text=OWASP ASVS 4.0.3 chapters').count()) > 0 && (await panel.locator('text=V14 Configuration').count()) > 0);
+      check('no page errors during the SARIF and ASVS checks', errors.length === 0, errors.join(' | '));
+      await target.close();
+      await panel.close();
+    }
+
     console.log('\nSecurity: check one finding again');
     if (run('Recheck')) {
       const { panel, target, errors } = await openPanel(env, vuln);
@@ -510,6 +532,153 @@ async function main() {
       check('no page errors during re-checks', errors.length === 0, errors.join(' | '));
       await target.close();
       await panel.close();
+    }
+
+    /* ---------- network: OpenAPI and types export ---------- */
+    console.log('\nNetwork: OpenAPI and types export');
+    if (run('Network')) {
+      const api = await openPanel(env, `http://127.0.0.1:${fx.demo.port}/`);
+      await api.panel.evaluate(() => startCapture());
+      await api.target.evaluate(async () => {
+        for (const n of [1, 2, 3]) await fetch('/vendor/data.json?n=' + n);
+      });
+      await api.panel.evaluate(() => show('network'));
+      await new Promise((r) => setTimeout(r, 1500));
+      const [dl] = await Promise.all([api.panel.waitForEvent('download'), api.panel.click('button:has-text("OpenAPI + types")')]);
+      const zipPath = path.join(scratch, 'api-export.zip');
+      await dl.saveAs(zipPath);
+      const got = await require('../lib/zip.js').read(fs.readFileSync(zipPath));
+      const root = got.files[0].path.split('/')[0];
+      const files = Object.fromEntries(got.files.map((f) => [f.path.slice(root.length + 1), new TextDecoder().decode(f.data)]));
+      check('the OpenAPI export has openapi.json, types.d.ts and a README', ['openapi.json', 'types.d.ts', 'README.md'].every((n) => n in files), Object.keys(files).join(', '));
+      const doc = JSON.parse(files['openapi.json'] || '{}');
+      const op = doc.paths && doc.paths['/vendor/data.json'] && doc.paths['/vendor/data.json'].get;
+      check('the captured endpoint has an inferred response schema, its query key, and no values', !!op && op.responses['200'].content['application/json'].schema.properties.ok.type === 'boolean' && op.parameters.some((x) => x.name === 'n') && !files['openapi.json'].includes('"ok": true') && !/"true"|=true/.test(files['openapi.json']), JSON.stringify(op || {}).slice(0, 300));
+      check('the TypeScript declaration names the response type and says it is inferred', /export type GetVendorDataJsonResponse200 = \{/.test(files['types.d.ts'] || '') && /ok: boolean;/.test(files['types.d.ts'] || '') && /Inferred from captured network traffic/.test(files['types.d.ts'] || ''), (files['types.d.ts'] || '').slice(0, 200));
+      await api.target.close();
+      await api.panel.close();
+    }
+
+    /* ---------- site access: sites list, clear, and Allow this site ---------- */
+    console.log('\nSite access: sites DevForge worked on, and Allow this site');
+    if (run('SiteAccess')) {
+      const { panel, target, errors } = await openPanel(env, vuln);
+      const origin = new URL(vuln).origin;
+      await panel.evaluate(() => show('home'));
+      await panel.waitForFunction((o) => DF.state.siteLog.some((e) => e.origin === o), origin, { timeout: 15000 }).catch(() => {});
+      const logged = await panel.evaluate(() => DF.state.siteLog.map((e) => e.origin));
+      check('the site DevForge worked on is listed by origin, without a path', logged.includes(origin) && logged.every((o) => !/\/\S/.test(o.replace(/^https?:\/\//, ''))), JSON.stringify(logged));
+      await panel.evaluate(() => show('settings'));
+      check('Settings shows the list of sites with its visit count', (await panel.locator('text=Sites DevForge worked on').count()) > 0 && (await panel.locator('text=' + origin).count()) > 0);
+      panel.once('dialog', (d) => d.accept());
+      await panel.click('#site-log-clear');
+      check('clearing the list empties it', (await panel.evaluate(() => DF.state.siteLog.length)) === 0 && (await panel.locator('#site-log-clear').isDisabled()));
+      const stored = await panel.evaluate(() => new Promise((res) => chrome.storage.session.get('siteLog', (r) => res(r.siteLog || []))));
+      check('the cleared list is also cleared in storage', Array.isArray(stored) && stored.length === 0, JSON.stringify(stored));
+
+      await panel.evaluate(() => show('settings'));
+      await panel.click('label[for="set-allsites"]');
+      await panel.waitForTimeout(300);
+      check('limited mode starts with an empty allowlist', (await panel.evaluate(() => DF.state.settings.allowAllSites)) === false && (await panel.evaluate(() => DF.state.settings.siteAllowlist.length)) === 0);
+      await panel.evaluate(() => show('home'));
+      await panel.waitForSelector('#home-allow-site', { timeout: 15000 });
+      check('in limited mode the Home card offers to allow the page in front', (await panel.locator('#home-allow-site').count()) === 1);
+      await panel.click('#home-allow-site');
+      await panel.waitForTimeout(300);
+      check('the one-click allow adds that origin to the list', (await panel.evaluate(() => DF.state.settings.siteAllowlist)).includes(origin));
+      check('after the allow, the Home card no longer offers it', (await panel.locator('#home-allow-site').count()) === 0);
+      check('no page errors in the site access checks', errors.length === 0, errors.join(' | '));
+      // Later blocks share this browser profile: put back the default of all sites.
+      await panel.evaluate(() => { DF.state.settings.allowAllSites = true; DF.state.settings.siteAllowlist = []; saveSettings(); });
+      await panel.waitForTimeout(400);
+      await target.close();
+      await panel.close();
+    }
+
+    /* ---------- storage: IndexedDB, caches and service workers ---------- */
+    console.log('\nStorage: IndexedDB, caches and service workers');
+    if (run('Storage')) {
+      const lab = await openPanel(env, `http://127.0.0.1:${fx.demo.port}/storage-lab/`);
+      await lab.target.waitForFunction(() => window.labReady === true, null, { timeout: 20000 });
+      check('the storage lab page made its database, cache and service worker', (await lab.target.evaluate(() => window.labError || null)) === null);
+      await lab.panel.evaluate(() => show('storage'));
+      await lab.panel.waitForTimeout(500);
+      await lab.panel.locator('tr', { hasText: 'labdb' }).first().waitFor({ timeout: 20000 });
+      const deep = lab.panel.locator('#storage-deep');
+
+      await lab.panel.locator('tr', { hasText: 'labdb' }).first().locator('button', { hasText: 'Browse' }).click();
+      await deep.locator('table').first().waitFor();
+      const stores = await deep.innerText();
+      check('a database lists its stores with their record counts and key kind', /notes/.test(stores) && /people/.test(stores) && /outside the value/.test(stores) && /in the value: "id"/.test(stores), stores.slice(0, 300));
+
+      await deep.locator('tr', { hasText: 'notes' }).locator('button', { hasText: 'Browse' }).click();
+      await deep.locator('table').first().waitFor();
+      const records = await deep.innerText();
+      check('a store shows its records with their keys and values', /"n1"/.test(records) && /hello/.test(records) && /7/.test(records), records.slice(0, 300));
+
+      await deep.locator('tr', { hasText: 'n1' }).locator('button', { hasText: 'Edit' }).click();
+      const area = deep.locator('textarea');
+      await area.fill('{"text": "changed"');
+      await deep.locator('button', { hasText: 'Save record' }).click();
+      await deep.locator('text=not valid JSON').waitFor({ timeout: 10000 });
+      check('an edit that is not valid JSON is refused in plain words, and nothing is saved', /not valid JSON/.test(await deep.innerText()) && (await lab.target.evaluate(() => new Promise((res) => { const r = indexedDB.open('labdb'); r.onsuccess = () => { const q = r.result.transaction('notes').objectStore('notes').get('n1'); q.onsuccess = () => { r.result.close(); res(q.result.text); }; }; }))) === 'hello');
+      await area.fill('{"text": "changed", "when": {"$date": "2026-01-02T03:04:05.000Z"}}');
+      await deep.locator('button', { hasText: 'Save record' }).click();
+      await deep.locator('table').first().waitFor();
+      const saved = await lab.target.evaluate(() => new Promise((res) => { const r = indexedDB.open('labdb'); r.onsuccess = () => { const q = r.result.transaction('notes').objectStore('notes').get('n1'); q.onsuccess = () => { r.result.close(); res({ text: q.result.text, when: q.result.when instanceof Date ? q.result.when.toISOString() : null }); }; }; }));
+      check('a saved edit is written to the database, and a date in it comes back as a date', saved.text === 'changed' && saved.when === '2026-01-02T03:04:05.000Z', JSON.stringify(saved));
+
+      lab.panel.once('dialog', (d) => d.accept());
+      await deep.locator('tr', { hasText: 'n2' }).locator('button', { hasText: 'Delete' }).click();
+      await deep.locator('tr', { hasText: 'second' }).waitFor({ state: 'detached', timeout: 15000 }).catch(() => {});
+      const countAfter = await lab.target.evaluate(() => new Promise((res) => { const r = indexedDB.open('labdb'); r.onsuccess = () => { const q = r.result.transaction('notes').objectStore('notes').count(); q.onsuccess = () => { r.result.close(); res(q.result); }; }; }));
+      check('a confirmed delete removes only that record', countAfter === 2, 'records left: ' + countAfter);
+
+      await deep.locator('button', { hasText: 'Back to stores' }).click();
+      await deep.locator('tr', { hasText: 'people' }).locator('button', { hasText: 'Browse' }).waitFor();
+      await deep.locator('tr', { hasText: 'people' }).locator('button', { hasText: 'Browse' }).click();
+      await deep.locator('table').first().waitFor();
+      const people = await deep.innerText();
+      check('a store whose key lives in the value cannot be edited or deleted here, and says so', /key in value/.test(people) && /cannot be edited or deleted here/.test(people) && (await deep.locator('button', { hasText: 'Delete' }).count()) === 0);
+
+      const [dl] = await Promise.all([lab.panel.waitForEvent('download'), deep.locator('button', { hasText: 'Export this store' }).click().then(async () => { await deep.locator('tr', { hasText: 'people' }).count(); })]).catch(() => [null]);
+      check('export of a store downloads a JSON file', !!dl, dl ? dl.suggestedFilename() : 'no download');
+      if (dl) {
+        const exp = JSON.parse(fs.readFileSync(await (async () => { const f = path.join(scratch, 'store-export.json'); await dl.saveAs(f); return f; })(), 'utf8'));
+        check('the store export has the records and says whether it is complete', exp.store === 'people' && exp.records.length === 1 && exp.complete === true && exp.records[0].value.name === 'Ana', JSON.stringify(exp).slice(0, 200));
+      }
+
+      await lab.panel.locator('#storage-deep button', { hasText: 'Close' }).first().click();
+      await lab.panel.locator('button.tag', { hasText: 'lab-cache' }).click();
+      await deep.locator('table').first().waitFor();
+      const cacheText = await deep.innerText();
+      check('a cache lists its entries with status, type and size', /\/storage-lab\/data\/a\.txt/.test(cacheText) && /200/.test(cacheText), cacheText.slice(0, 300));
+
+      const [zdl] = await Promise.all([lab.panel.waitForEvent('download'), deep.locator('button', { hasText: 'Export cache' }).click()]);
+      const zipFile = path.join(scratch, 'cache-export.zip');
+      await zdl.saveAs(zipFile);
+      const zipped = await require('../lib/zip.js').read(fs.readFileSync(zipFile));
+      const cacheRoot = zipped.files[0].path.split('/')[0];
+      const cacheFiles = Object.fromEntries(zipped.files.map((f) => [f.path.slice(cacheRoot.length + 1), new TextDecoder().decode(f.data)]));
+      const manifest = JSON.parse(cacheFiles['manifest.json'] || '{}');
+      check('the cache export holds each body under a safe name and a manifest', manifest.entries && manifest.entries.length === 2 && Object.values(cacheFiles).includes('alpha') && Object.values(cacheFiles).includes('bravo') && manifest.entries.every((e) => e.file && e.file.startsWith('cache/')), Object.keys(cacheFiles).join(', '));
+
+      lab.panel.once('dialog', (d) => d.accept());
+      await deep.locator('tr', { hasText: 'a.txt' }).locator('button', { hasText: 'Delete' }).click();
+      await deep.locator('tr', { hasText: 'a.txt' }).waitFor({ state: 'detached', timeout: 15000 }).catch(() => {});
+      const stillThere = await lab.target.evaluate(async () => !!(await (await caches.open('lab-cache')).match('/storage-lab/data/a.txt')));
+      check('a confirmed delete removes that cache entry and keeps the others', !stillThere && (await lab.target.evaluate(async () => !!(await (await caches.open('lab-cache')).match('/storage-lab/data/b.txt')))), 'still there: ' + stillThere);
+
+      await lab.panel.evaluate(() => show('storage'));
+      await lab.panel.waitForSelector('table');
+      lab.panel.once('dialog', (d) => d.accept());
+      await lab.panel.locator('tr', { hasText: '/storage-lab/' }).locator('button', { hasText: 'Unregister' }).first().click();
+      await lab.panel.waitForTimeout(1500);
+      const regs = await lab.target.evaluate(() => navigator.serviceWorker.getRegistrations().then((r) => r.length));
+      check('a confirmed unregister removes the service worker for that scope', regs === 0, 'registrations left: ' + regs);
+      check('no page errors in the storage lab', lab.errors.length === 0, lab.errors.join(' | '));
+      await lab.target.close();
+      await lab.panel.close();
     }
 
     /* ---------- capture self-check ---------- */

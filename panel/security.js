@@ -881,6 +881,36 @@ function secPlan(box, report) {
   }
 }
 
+// The findings sorted into OWASP ASVS chapters. The mapping is to chapter level; see lib/sarif.js.
+function secAsvs(report) {
+  const cov = DFSarif.asvsCoverage(report.findings || []);
+  return section(
+    'OWASP ASVS ' + cov.version + ' chapters (chapter level)',
+    h('p', { class: 'sev-info' }, 'Each finding is placed in the chapter it is about. Requirement numbers are not given. A finding in "not mapped" does not fit a chapter.'),
+    table(
+      ['Chapter', 'Findings', 'Which'],
+      cov.chapters.map((c) => [c.id + ' ' + c.name, String(c.findings), c.ids.join(', ') || '–']),
+      { class: 'compact' }
+    ),
+    h('div', { class: 'sev-info' }, 'Not mapped: ' + cov.notMapped + ' finding(s).')
+  );
+}
+
+// SARIF 2.1.0 for code scanning tools. The file is checked before it is saved, so a broken file is
+// never written.
+async function secSarif(report, name) {
+  const doc = DFSarif.toSarif(report.findings || [], {
+    version: chrome.runtime.getManifest().version,
+    endedAt: report.scannedAt || undefined,
+  });
+  const problems = DFSarif.validateSarif(doc);
+  if (problems.length) {
+    toast('The SARIF file did not pass its own check: ' + problems[0]);
+    return;
+  }
+  await saveGuarded(name + '.sarif', JSON.stringify(doc, null, 2) + '\n', 'application/json');
+}
+
 function secCoverage(box, report) {
   const cov = report.coverage;
   box.append(
@@ -892,6 +922,7 @@ function secCoverage(box, report) {
         cov.checks.map((c) => [c.title, secBadge(c.state === 'done' ? 'observed' : c.state === 'failed' ? 'high' : 'conf', SEC_STATE_LABEL[c.state]), c.requests, h('span', { class: 'sev-info' }, c.reason)])
       )
     ),
+    secAsvs(report),
     section(
       'Not testable from a browser extension',
       h('ul', null, cov.notTestable.map((n) => h('li', null, h('b', null, n.title), '. ', n.reason, h('div', { class: 'sev-info' }, 'How to check: ' + n.how))))
@@ -931,6 +962,7 @@ function secExport(box, report) {
         h('button', { class: 'primary', on: { click: () => copy(md) } }, icon('copy', 14), ' Copy Markdown'),
         h('button', { on: { click: () => download(name + '.md', md, 'text/markdown') } }, icon('download', 14), ' Download .md'),
         h('button', { on: { click: () => download(name + '.json', JSON.stringify(report, null, 2), 'application/json') } }, icon('download', 14), ' Download .json'),
+        h('button', { id: 'sec-sarif', on: { click: () => secSarif(report, name) } }, icon('download', 14), ' Download .sarif (SARIF 2.1.0)'),
         h('button', { on: { click: async () => { await secSaveByHand(report); SEC.repaint && SEC.repaint(); } } }, icon('work', 14), SEC.saved ? ' Saved to workspace' : SEC.autoSaved ? ' Keep in workspace' : ' Save to workspace')
       )
     ),

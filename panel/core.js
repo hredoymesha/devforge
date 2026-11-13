@@ -10,6 +10,9 @@ const DF = {
     project: null,
     // Notes about saved data that was not valid and was ignored (lib/stored.js). Shown in Settings.
     stored: { ignored: [] },
+    // Sites DevForge worked on, most recent first (lib/siteaccess.js). Only web origins.
+    siteLog: [],
+    lastSite: null,
     settings: {
       theme: 'system',
       shortcuts: {},
@@ -40,12 +43,15 @@ const AGENT_FILES = [
   'agent/mutations.js',
   'agent/vitals.js',
   'agent/tokens.js',
+  'lib/storageview.js',
   'agent/storage.js',
+  'lib/latefetch.js',
+  'agent/late.js',
   'agent/security.js',
   'agent/prototype.js',
 ];
 // Bump whenever the agent API changes so pages holding an older copy get a fresh one.
-const AGENT_VERSION = 13;
+const AGENT_VERSION = 15;
 
 // Records what lib/stored.js left out of the saved data and tells the user once per new note.
 function noteIgnored(list) {
@@ -156,6 +162,7 @@ const busy = async (label, fn) => {
 async function activeTab() {
   const [t] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!t) throw new Error('No active tab.');
+  noteSite(t.url);
   if (DF.state.tabId !== t.id) agentReady.delete(DF.state.tabId);
   DF.state.tabId = t.id;
   DF.state.url = t.url || '';
@@ -171,12 +178,16 @@ const RESTRICTED =
   /^(chrome|edge|about|brave|opera|vivaldi|devtools|view-source|chrome-extension|moz-extension|chrome-untrusted):|^https:\/\/(chrome\.google\.com\/webstore|chromewebstore\.google\.com|microsoftedge\.microsoft\.com\/addons)/i;
 // Settings → Site access. True when DevForge may run on this address.
 function siteAllowed(url, settings = DF.state.settings) {
-  if (settings.allowAllSites !== false) return true;
-  try {
-    return (settings.siteAllowlist || []).includes(new URL(url).origin);
-  } catch (_) {
-    return false;
-  }
+  return DFSiteAccess.allowed(settings, url);
+}
+// The local list of sites DevForge worked on. It is written once for each new site, and only the
+// origin is kept.
+function noteSite(url) {
+  const origin = DFSiteAccess.originOf(url || '');
+  if (!origin || origin === DF.state.lastSite) return;
+  DF.state.lastSite = origin;
+  DF.state.siteLog = DFSiteAccess.record(DF.state.siteLog, origin, new Date().toISOString());
+  chrome.storage.session.set({ siteLog: DF.state.siteLog }).catch(() => {});
 }
 async function exec(func, args = [], world = 'ISOLATED', files) {
   const t = await activeTab();

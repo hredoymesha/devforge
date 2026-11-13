@@ -364,6 +364,41 @@ customElements.define('fancy-card', FancyCard);
     if (p === '/vendor/stale.js') return text(res, VENDOR.stale, 'application/javascript');
     if (p === '/vendor/changing.js') return text(res, 'window.__c = ' + Math.random() + ';', 'application/javascript');
     if (p === '/vendor/data.json') return text(res, '{"ok":true}', 'application/json');
+    // Late-loading test page: a script arrives after three seconds, a stylesheet and a request follow a click.
+    if (p === '/late-demo/') {
+      return text(res, `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Late demo</title></head><body><h1 id="title">Late demo</h1><button id="css">Load style</button> <button id="data">Fetch data</button><script>
+setTimeout(function () { var s = document.createElement('script'); s.src = '/late-demo/late.js'; document.body.appendChild(s); }, 3000);
+document.getElementById('css').addEventListener('click', function () { var l = document.createElement('link'); l.rel = 'stylesheet'; l.href = '/late-demo/late.css'; document.head.appendChild(l); });
+document.getElementById('data').addEventListener('click', function () { fetch('/late-demo/data.json').then(function (r) { return r.text(); }); });
+</script></body></html>`, 'text/html');
+    }
+    if (p === '/late-demo/late.js') return text(res, 'window.lateRan = true;', 'application/javascript');
+    if (p === '/late-demo/late.css') return text(res, '#title { color: teal; }', 'text/css');
+    if (p === '/late-demo/data.json') return text(res, '{"ok":true}', 'application/json');
+    // Storage tab test page: an IndexedDB database, a cache and a service worker, made by the page.
+    if (p === '/storage-lab/') {
+      return text(res, `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Storage lab</title></head><body><script>
+(async () => {
+  const open = (name, opts, stores) => new Promise((resolve, reject) => {
+    const r = indexedDB.open(name, 1);
+    r.onupgradeneeded = () => { const db = r.result; for (const s of stores) db.createObjectStore(s.name, s.opts); };
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+  const db = await open('labdb', 1, [{ name: 'notes', opts: {} }, { name: 'people', opts: { keyPath: 'id' } }]);
+  await new Promise((res, rej) => { const tx = db.transaction('notes', 'readwrite'); const os = tx.objectStore('notes'); os.put({ text: 'hello' }, 'n1'); os.put({ text: 'second' }, 'n2'); os.put({ text: 'third' }, 7); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+  await new Promise((res, rej) => { const tx = db.transaction('people', 'readwrite'); tx.objectStore('people').put({ id: 'p1', name: 'Ana' }); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+  db.close();
+  const cache = await caches.open('lab-cache');
+  await cache.put('/storage-lab/data/a.txt', new Response('alpha', { headers: { 'content-type': 'text/plain' } }));
+  await cache.put('/storage-lab/data/b.txt', new Response('bravo', { headers: { 'content-type': 'text/plain' } }));
+  await navigator.serviceWorker.register('/storage-lab/sw.js', { scope: '/storage-lab/' });
+  await navigator.serviceWorker.ready;
+  window.labReady = true;
+})().catch((e) => { window.labError = String(e); window.labReady = true; });
+</script></body></html>`, 'text/html');
+    }
+    if (p === '/storage-lab/sw.js') return text(res, "self.addEventListener('install', () => self.skipWaiting());\nself.addEventListener('activate', () => self.clients.claim());", 'application/javascript');
     if (p === '/vendor/pic.png') return bin(PNG_BYTES, 'image/png');
     if (p === '/demo/menu') return html(res, '<!doctype html><title>Menu</title><h1>Menu</h1>');
     return text(res, 'not found', 'text/plain', 404);

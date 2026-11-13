@@ -1,6 +1,6 @@
 {
   "name": "devforge",
-  "version": "4.3.0",
+  "version": "4.4.0",
   "private": true,
   "description": "DevForge Chrome extension. No build step; this file only holds the dev scripts.",
   "license": "MIT",

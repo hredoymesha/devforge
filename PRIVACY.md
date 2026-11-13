@@ -11,7 +11,7 @@ Everything stays in your browser profile.
 | Where | What | Cleared by |
 | --- | --- | --- |
 | `chrome.storage.local` | Your settings (`settings`); interception rules (`netRules`); performance readings per page (`perfHistory`, under a hashed key, not the address); acknowledged Security findings (`secFindingAcks`); a random salt for those keys (`installSalt`); the time of the last clean-up. With Owner mode: the sealed passphrase check, sealed scan records, the sealed list of sites you authorised and the idle-lock choice. | Settings, Stored data and clean-up buttons; removing the extension |
-| `chrome.storage.session` | Short-lived state: a command waiting for the panel (`pendingCommand`), the capture channel's key for a tab, the per-site ownership confirmations for the Security checker (`secAcknowledged`), Owner scan approvals. | Closing the browser |
+| `chrome.storage.session` | Short-lived state: the list of sites DevForge worked on (`siteLog`, web addresses without paths; in memory only, cleared when the browser closes, never written to disk), a command waiting for the panel (`pendingCommand`), the capture channel's key for a tab, the per-site ownership confirmations for the Security checker (`secAcknowledged`), Owner scan approvals. | Closing the browser |
 | IndexedDB, database `devforge` | Workspace projects and the items you save (elements, components, screenshots, data, workflows, playgrounds, AI tasks, Security reports). | Deleting items or projects in Workspace; removing the extension |
 
 Workspace items and saved Security reports are **not encrypted** unless you turn on Owner mode

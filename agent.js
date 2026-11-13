@@ -6,7 +6,7 @@
 (() => {
   if (window.__DF && window.__DF.version) return;
 
-  const AGENT_VERSION = 13; // must match AGENT_VERSION in panel/core.js
+  const AGENT_VERSION = 15; // must match AGENT_VERSION in panel/core.js
   const MAX_NODES = 20000;
   const state = {
     selected: null,

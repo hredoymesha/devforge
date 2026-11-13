@@ -163,6 +163,16 @@ async function runSiteDownload(opts, ui) {
     queue.push({ url: n, kind, path, via });
   };
   scan.resources.forEach((r) => enqueue(r.url, r.kind, (r.via || [])[0]));
+  // Resources the page loaded after its first render, when the user watched for them (agent/late.js).
+  if (opts.late) {
+    const got = await call('lateList').catch(() => null);
+    if (got) {
+      for (const it of DFLate.merge(got.timing || [], got.observed || [])) {
+        const kind = { script: 'js', stylesheet: 'css', image: 'image', media: 'media' }[it.kind] || 'api';
+        enqueue(it.url, kind, 'loaded later');
+      }
+    }
+  }
   if (opts.originalHtml) enqueue(pageUrl, 'html', 'page');
   ui.update({ total: queue.length, done: 0, bytes: 0, current: 'starting…' });
 
@@ -489,6 +499,7 @@ registerTab('site', 'Site', async (v) => {
     keepScripts: true,
     originalHtml: true,
     api: true,
+    late: false,
   };
   const optRow = h(
     'div',
@@ -503,6 +514,7 @@ registerTab('site', 'Site', async (v) => {
       ['keepScripts', 'keep scripts in snapshot'],
       ['originalHtml', 'original HTML'],
       ['api', 'captured API responses'],
+      ['late', 'resources that load after the page (watch first in Export)'],
     ].map(([k, l]) =>
       h(
         'label',
@@ -748,7 +760,135 @@ registerTab('site', 'Site', async (v) => {
       h('span', { class: 'sev-info' }, 'Step 2')
     ),
     prog,
-    out
+    out,
+    siteBundleSection()
   );
   if (siteS.scan) draw();
 });
+
+// Bundle analysis: a Site ZIP read in the panel. For each script with a source map, the bytes of the
+// script are split between the original files the map names. Sizes are estimates from the mapping.
+function siteBundleSection() {
+  const input = h('input', { type: 'file', accept: '.zip', id: 'site-bundle-zip', 'aria-label': 'Site ZIP' });
+  const out = h('div', { id: 'site-bundle-out' });
+  return section(
+    'Bundle analysis',
+    h(
+      'div',
+      { class: 'sev-info' },
+      'Pick a ZIP from Download all site code. For each script that has a source map, the script is split between the original files named in the map. Sizes are estimates from the mapping. Nothing is uploaded.'
+    ),
+    h(
+      'div',
+      { class: 'row' },
+      h('label', null, 'Site ZIP ', input),
+      h('button', { id: 'site-bundle-run', class: 'primary', on: { click: () => analyseSiteBundles(input, out) } }, 'Analyse')
+    ),
+    out
+  );
+}
+
+// The path inside the ZIP that a map reference names. Addresses with a scheme are not followed.
+function siteBundleRef(scriptPath, ref) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(ref) || ref.startsWith('//')) return null;
+  const clean = ref.split(/[?#]/)[0];
+  const parts = clean.startsWith('/') ? [] : scriptPath.split('/').slice(0, -1);
+  for (const seg of clean.split('/')) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') parts.pop();
+    else parts.push(seg);
+  }
+  try {
+    return decodeURIComponent(parts.join('/'));
+  } catch (_) {
+    return null;
+  }
+}
+
+async function analyseSiteBundles(input, out) {
+  clear(out);
+  const file = input.files[0];
+  if (!file) {
+    out.append(h('div', { class: 'card sev-error' }, 'Choose a Site ZIP first.'));
+    return;
+  }
+  try {
+    const res = await busy('Reading the bundles', async () => {
+      const zip = await DFZip.read(file);
+      const byPath = new Map(zip.files.map((f) => [f.path, f.data]));
+      const dec = new TextDecoder('utf-8');
+      const results = [];
+      const notes = [];
+      for (const f of zip.files.filter((x) => /\.m?js$/i.test(x.path))) {
+        const code = dec.decode(f.data);
+        const tail = code.slice(-2000).match(/[#@]\s*sourceMappingURL=([^\s*'"]+)/g);
+        let mapText = null;
+        let mapName = null;
+        if (tail) {
+          const ref = tail[tail.length - 1].replace(/^[#@]\s*sourceMappingURL=/, '');
+          if (/^data:application\/json;base64,/i.test(ref)) {
+            mapText = dec.decode(Uint8Array.from(atob(ref.split(',')[1]), (c) => c.charCodeAt(0)));
+          } else {
+            mapName = siteBundleRef(f.path, ref);
+          }
+        } else if (byPath.has(f.path + '.map')) {
+          mapName = f.path + '.map';
+        }
+        if (!mapText && mapName && byPath.has(mapName)) mapText = dec.decode(byPath.get(mapName));
+        if (!mapText) continue;
+        try {
+          results.push(DFSourceMap.analyse(f.path, code, DFSourceMap.parseMap(mapText)));
+        } catch (e) {
+          notes.push({ script: f.path, note: e.message });
+        }
+      }
+      return { results, notes };
+    });
+    const modules = DFSourceMap.modulesOf(res.results);
+    const dups = DFSourceMap.duplicates(modules);
+    const total = res.results.reduce((n, r) => n + r.total, 0);
+    const withText = res.results.reduce((n, r) => n + r.sourcesWithContent, 0);
+    const files = res.results.reduce((n, r) => n + r.sourceCount, 0);
+    const summary = {
+      scripts: res.results.length,
+      originalFiles: files,
+      filesWithText: withText,
+      bytes: total,
+      notes: res.notes,
+      modules: modules.slice(0, 200),
+      duplicates: dups,
+    };
+    if (!res.results.length) {
+      out.append(h('div', { class: 'card' }, 'No script in this ZIP has a source map that is also in the ZIP. Source maps are the .map files next to the scripts, or inline maps.'));
+      return;
+    }
+    const share = (b) => (total ? ((b / total) * 100).toFixed(1) + '%' : '0%');
+    const stampNow = stamp();
+    out.append(
+      h('div', { class: 'card' },
+        h('b', null, res.results.length + ' script' + (res.results.length === 1 ? '' : 's') + ' with a source map. '),
+        h('span', { class: 'sev-info' }, files + ' original files, ' + total + ' bytes of script.'),
+        withText === 0
+          ? h('div', { class: 'sev-info' }, 'None of these source maps includes the original source text. The file names and sizes come from the map alone.')
+          : h('div', { class: 'sev-info' }, withText + ' of the original files have their source text in the map.')
+      ),
+      table(
+        ['Original file', 'Bytes', 'Share'],
+        modules.slice(0, 50).map((m) => [m.path.slice(0, 120), String(m.bytes), share(m.bytes)])
+      ),
+      modules.length > 50 ? h('div', { class: 'sev-info' }, 'Showing the 50 largest of ' + modules.length + ' files. The save has all of them.') : null,
+      dups.length
+        ? table(
+            ['Package in more than one folder', 'Copies', 'Bytes'],
+            dups.slice(0, 30).map((d) => [d.name, String(d.copies), String(d.bytes)])
+          )
+        : h('div', { class: 'sev-info' }, 'No package appears in more than one folder.'),
+      res.notes.length ? h('div', { class: 'sev-info' }, res.notes.map((n) => n.script + ': ' + n.note).join('. ')) : null,
+      h('div', { class: 'row' }, h('button', { on: { click: () => saveGuarded('bundles-' + stampNow + '.json', JSON.stringify(summary, null, 2) + '\n', 'application/json') } }, icon('download', 13), ' Save JSON'))
+    );
+  } catch (e) {
+    out.append(h('div', { class: 'card sev-error' }, e.message));
+    status(e.message, 'err');
+  }
+}
+

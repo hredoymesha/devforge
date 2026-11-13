@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open a DevForge encrypted export</title>
+<style>
+:root { color-scheme: light dark; --fg: #1c1b19; --bg: #fbfaf7; --line: #b9b4aa; --accent: #7a3e12; --err: #9b1c1c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --fg: #eeebe4; --bg: #1d1c1a; --line: #5d5950; --accent: #e0a46e; --err: #ff8a8a; } }
+:root[data-theme="dark"] { --fg: #eeebe4; --bg: #1d1c1a; --line: #5d5950; --accent: #e0a46e; --err: #ff8a8a; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+main { max-width: 36rem; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.4rem; margin: 0.5rem 0; }
+label { display: block; margin-top: 1rem; font-weight: 600; }
+input { display: block; width: 100%; box-sizing: border-box; margin-top: 0.3rem; padding: 0.5rem; font: inherit; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 4px; }
+button { margin-top: 1rem; padding: 0.55rem 1.1rem; font: inherit; color: var(--bg); background: var(--accent); border: 0; border-radius: 4px; cursor: pointer; }
+button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+#error { color: var(--err); }
+#result a { color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+<h1>Open a DevForge encrypted export</h1>
+<p>This page works without a network connection. The file and the passphrase are read on this computer and are not sent anywhere.</p>
+<form id="form">
+<label for="file">Encrypted file (.devforge-enc)</label>
+<input id="file" type="file" accept=".devforge-enc,application/json">
+<label for="pass">Passphrase</label>
+<input id="pass" type="password" autocomplete="off">
+<button type="submit">Decrypt</button>
+</form>
+<p id="error" role="alert" hidden></p>
+<p id="result" hidden></p>
+</main>
+<script src="../lib/encexport.js"></script>
+<script src="decrypt.js"></script>
+</body>
+</html>

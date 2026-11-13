@@ -152,3 +152,15 @@ Still open: DevForge removes its own highlight elements from a saved page by the
 page can leave one of its own elements out of a saved copy by using that prefix. `dom` covers the
 properties the agent reads; others, such as `id`, `className` and `style`, can still be shadowed on a
 form and give a wrong string, never an error.
+
+## 5. Findings in other formats
+
+- **SARIF 2.1.0** (`lib/sarif.js`). Each finding is one result. The result keeps the title, the rule
+  id, the severity and the address without its query string or fragment. Details and evidence are not
+  written, so a value that a finding quotes stays in the report. The file is checked against the
+  fields SARIF 2.1.0 requires before it is saved. The optional `$schema` field is left out so the file
+  names no address outside the AI sites.
+- **OWASP ASVS 4.0.3** (chapter level). Each theme is placed in one chapter. Requirement numbers are
+  not given, because they were not checked against the ASVS text. A theme that fits no chapter is
+  shown as not mapped.
+

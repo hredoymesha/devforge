@@ -1,5 +1,48 @@
 # Changelog
 
+## 4.4.0
+
+### New
+- **Component code.** Export → Selected part → Component code writes a React component, a Vue single-file
+  component, a Web Component or a small React project that runs with Vite. The code is built from the
+  part's computed styles, not from its original source. Each ZIP has a README that says where it came from.
+- **Three widths.** *capture 3 widths* in Export takes a picture of the part at 360, 768 and 1280 pixels by
+  resizing this browser window, then puts the window back. `data/media-rules.json` lists the media
+  queries of the part and which of them apply at each width.
+- **Compare two exports.** Export pairs two ZIPs from Export or Site and lists the files added, removed and
+  changed. HTML, CSS and JSON are compared by content. The report saves as Markdown or JSON.
+- **Bundle analysis.** The Site tab splits each script that has a source map between its original files and
+  lists packages that appear in more than one folder. It says so when no map embeds source text.
+- **OpenAPI and types.** The Network tab writes guessed OpenAPI 3.0.3 and TypeScript types from the captured
+  JSON. Values are never written out.
+- **Storage.** The Storage tab browses, edits, deletes and exports IndexedDB records, browses and exports
+  Cache Storage as a ZIP, and unregisters service workers. Every delete asks first.
+- **SARIF and ASVS.** Security findings export as SARIF 2.1.0 (no details, no query strings). The coverage
+  view groups the findings by OWASP ASVS 4.0.3 chapter, at chapter level.
+- **Encrypted export.** The full ZIP can be sealed with a passphrase (PBKDF2-SHA256, AES-GCM).
+  `tools/decrypt.html` in the source folder opens it offline.
+- **Sites DevForge worked on.** Settings lists the web sites DevForge ran on, with a Clear button. The list
+  is kept in session storage: it is not saved to disk and is cleared when the browser closes. In limited
+  site access, the Home card offers *Allow this site*.
+- **Resources that load later.** Start watching, then export: scripts, styles and images that arrive after
+  the first render are saved in `loaded-later/`, and the Site ZIP includes them too. API and XHR calls are
+  listed but not sent again.
+
+### Changed
+- The page agent is version 15. Pages with an older copy get the new one on their next use.
+- Guide cards for Export, Site, Network, Storage, Security and Settings describe the new features.
+
+### Permissions
+- No new permission. `<all_urls>` is unchanged, and the debugger permission and `devtools_page` are not used.
+
+### Known limits
+- Component code is generated from computed styles. Event handlers, page scripts and state are not copied.
+- Window widths need a normal browser window. A maximised or full-screen window is skipped.
+- Bundle sizes are estimates from the source map. Indexed source maps are not analysed.
+- OpenAPI and TypeScript output are guesses from captured samples. The `.d.ts` file is not compiled here.
+- SARIF and ASVS are chapter-level. Requirement numbers are not given.
+- The Owner-key option for encrypted exports is not available. The decrypt page works with the passphrase only.
+- Resources that load before watching starts are listed only if the browser still has their timing.
 ## 4.3.0
 
 ### New

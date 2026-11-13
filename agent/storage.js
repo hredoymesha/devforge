@@ -144,5 +144,186 @@
     return { removed: n };
   }
 
-  DF.extend({ storageDump, storageSet, storageRemove, storageClear });
+  // IndexedDB and Cache Storage. A name from the panel is checked against what the browser lists
+  // first, so a call never creates a database or cache by accident.
+  // lib/storageview.js is injected before this file, so it is read from the window here.
+  const SV = window.DFStorageView;
+  const LIMITS = SV.LIMITS;
+  const reqDone = (req) =>
+    new Promise((resolve, reject) => {
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('The browser refused the request.'));
+    });
+  const txDone = (tx) =>
+    new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('The change did not complete.'));
+      tx.onabort = () => reject(tx.error || new Error('The change was cancelled by the browser.'));
+    });
+  async function checkDb(name) {
+    const list = indexedDB.databases ? await indexedDB.databases() : [];
+    if (!list.some((d) => d.name === name)) throw new Error('No IndexedDB database named "' + name + '" exists on this page.');
+  }
+  function openDb(name) {
+    return new Promise((resolve, reject) => {
+      const r = indexedDB.open(name);
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error || new Error('The database could not be opened.'));
+      r.onblocked = () => reject(new Error('The database is open in another tab. Close that tab and try again.'));
+    });
+  }
+
+  async function idbStores(name) {
+    await checkDb(name);
+    const db = await openDb(name);
+    try {
+      const stores = [];
+      for (const store of [...db.objectStoreNames]) {
+        const os = db.transaction(store, 'readonly').objectStore(store);
+        const count = await reqDone(os.count());
+        stores.push({ name: store, count, keyPath: os.keyPath == null ? null : JSON.stringify(os.keyPath), autoIncrement: !!os.autoIncrement });
+      }
+      return { version: db.version, stores };
+    } finally {
+      db.close();
+    }
+  }
+
+  // One page of records, or with full set, every record up to the export limits. Values are plain
+  // text: dates and binary data are marked, not written out.
+  async function idbRecords(name, store, offset, limit, full) {
+    await checkDb(name);
+    const db = await openDb(name);
+    try {
+      const os = db.transaction(store, 'readonly').objectStore(store);
+      const cap = full ? LIMITS.exportRecords : LIMITS.recordsPerPage;
+      const want = Math.min(Math.max(0, limit || cap), cap);
+      const rows = [];
+      let skipped = 0;
+      let bytes = 0;
+      let more = false;
+      let capped = false;
+      await new Promise((resolve, reject) => {
+        const req = os.openCursor();
+        req.onerror = () => reject(req.error);
+        req.onsuccess = () => {
+          const c = req.result;
+          if (!c) return resolve();
+          if (skipped < (offset || 0)) {
+            skipped++;
+            return c.continue();
+          }
+          if (rows.length >= want) {
+            more = true;
+            return resolve();
+          }
+          const enc = SV.encodeKey(c.key);
+          const v = SV.valueText(c.value);
+          if (full) {
+            bytes += v.chars;
+            if (bytes > LIMITS.exportBytes) {
+              capped = true;
+              return resolve();
+            }
+            rows.push({ key: enc, keyText: SV.keyText(enc), value: v.text });
+          } else {
+            rows.push({ key: enc, keyText: SV.keyText(enc), value: v.text, truncated: v.truncated, chars: v.chars });
+          }
+          c.continue();
+        };
+      });
+      return { rows, more, capped, offset: offset || 0 };
+    } finally {
+      db.close();
+    }
+  }
+
+  // Edits one record. Only stores whose key is kept outside the value can be edited, because the
+  // panel's key is the one that must be written back.
+  async function idbPut(name, store, encKey, json) {
+    await checkDb(name);
+    const value = SV.revive(json);
+    const key = SV.decodeKey(encKey);
+    const db = await openDb(name);
+    try {
+      const tx = db.transaction(store, 'readwrite');
+      const os = tx.objectStore(store);
+      if (os.keyPath != null) throw new Error('This store keeps the key inside the value, so it cannot be edited here.');
+      os.put(value, key);
+      await txDone(tx);
+      return { ok: true };
+    } finally {
+      db.close();
+    }
+  }
+
+  async function idbDelete(name, store, encKey) {
+    await checkDb(name);
+    const key = SV.decodeKey(encKey);
+    const db = await openDb(name);
+    try {
+      const tx = db.transaction(store, 'readwrite');
+      const os = tx.objectStore(store);
+      if (os.keyPath != null) throw new Error('This store keeps the key inside the value, so a record cannot be deleted here.');
+      os.delete(key);
+      await txDone(tx);
+      return { ok: true };
+    } finally {
+      db.close();
+    }
+  }
+
+  async function cacheNames() {
+    return window.caches ? await caches.keys() : [];
+  }
+  async function cacheList(name) {
+    if (!(await cacheNames()).includes(name)) throw new Error('No cache named "' + name + '" exists on this page.');
+    const cache = await caches.open(name);
+    const requests = await cache.keys();
+    const entries = [];
+    for (const req of requests.slice(0, LIMITS.cacheEntries)) {
+      const res = await cache.match(req);
+      const len = res ? Number(res.headers.get('content-length')) : NaN;
+      entries.push({
+        url: req.url,
+        status: res ? res.status : null,
+        type: res ? res.type : null,
+        contentType: res ? res.headers.get('content-type') || '' : '',
+        size: Number.isFinite(len) ? len : null,
+      });
+    }
+    return { entries, total: requests.length, truncated: requests.length > LIMITS.cacheEntries };
+  }
+
+  // The body of one entry as base64. An opaque response (a cross-origin request made without
+  // cors) has no readable body, and that is reported rather than guessed.
+  async function cacheRead(name, url) {
+    const cache = await caches.open(name);
+    const res = await cache.match(url);
+    if (!res) throw new Error('That entry is no longer in the cache.');
+    if (res.type === 'opaque') return { url, skipped: 'opaque response: the browser does not let scripts read its body' };
+    const blob = await res.blob();
+    if (blob.size > LIMITS.cacheBodyBytes) return { url, skipped: 'larger than ' + LIMITS.cacheBodyBytes / 1e6 + ' MB', size: blob.size };
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 32768) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768));
+    return { url, status: res.status, contentType: res.headers.get('content-type') || '', size: bytes.length, base64: btoa(bin) };
+  }
+
+  async function cacheDeleteEntry(name, url) {
+    const cache = await caches.open(name);
+    return { ok: await cache.delete(url) };
+  }
+  async function cacheDelete(name) {
+    if (!(await cacheNames()).includes(name)) throw new Error('No cache named "' + name + '" exists on this page.');
+    return { ok: await caches.delete(name) };
+  }
+
+  async function swUnregister(scope) {
+    const reg = navigator.serviceWorker ? await navigator.serviceWorker.getRegistration(scope) : null;
+    if (!reg || reg.scope !== scope) throw new Error('No service worker is registered for ' + scope + '.');
+    return { ok: await reg.unregister() };
+  }
+
+  DF.extend({ storageDump, storageSet, storageRemove, storageClear, idbStores, idbRecords, idbPut, idbDelete, cacheList, cacheRead, cacheDeleteEntry, cacheDelete, swUnregister });
 })();

@@ -534,6 +534,12 @@ chrome.tabs.onUpdated.addListener((id, ch) => {
   } catch (_) {
     /* saved settings are unavailable; defaults apply */
   }
+  try {
+    // Kept in memory by the browser only (chrome.storage.session): it is not written to disk.
+    DF.state.siteLog = DFStored.siteLog((await chrome.storage.session.get('siteLog')).siteLog);
+  } catch (_) {
+    /* the list is optional; an empty list is shown */
+  }
   applyTheme();
   DFStore.setIssueHandler(noteIgnored);
   await DFKeep.initSalt().catch(() => {});

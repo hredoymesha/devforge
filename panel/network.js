@@ -1385,7 +1385,32 @@ async function exportNet(fmt) {
   const timing = Object.fromEntries(
     rows.filter((r) => r.timingRec).map((r) => [r.id, r.timingRec])
   );
-  if (fmt === 'har') {
+  if (fmt === 'openapi') {
+    const res = DFSchema.groupEndpoints(full);
+    const doc = DFSchema.toOpenApi(res, { title: $('#target').textContent });
+    const readme = [
+      '# Inferred API',
+      '',
+      'Inferred from ' + res.total + ' captured request' + (res.total === 1 ? '' : 's') + ' on ' + (res.origin || 'no single origin') + '.',
+      '',
+      'These schemas are guesses from the responses that were captured. They are not the real API. Check every field against the service before you use it.',
+      '',
+      'Requests to other origins were left out (' + res.skipped + '). Bodies that were not JSON, or were cut short, were left out (' + res.unparsed + ').',
+      '',
+      'Files: openapi.json (OpenAPI 3.0.3) and types.d.ts (TypeScript declarations).',
+      '',
+    ].join('\n');
+    const files = [
+      { path: 'openapi.json', data: JSON.stringify(doc, null, 2) + '\n' },
+      { path: 'types.d.ts', data: DFSchema.toTypeScript(res) },
+      { path: 'README.md', data: readme },
+    ];
+    const safe = await guardFiles(files);
+    if (!safe) return;
+    const root = 'api-' + stamp();
+    download(root + '.zip', await DFZip.buildAsync(safe.map((f) => ({ path: root + '/' + f.path, data: f.data }))), 'application/zip');
+    status('Inferred ' + doc['x-devforge'].operations + ' operation(s). Check every schema against the real API.', 'ok');
+  } else if (fmt === 'har') {
     const har = DFHar.toHar(full, {
       pageUrl: DF.state.url,
       title: $('#target').textContent,
@@ -1842,7 +1867,8 @@ registerTab('network', 'Network', async (v) => {
       h('span', { class: 'sev-info' }, 'Export:'),
       h('button', { on: { click: () => exportNet('har') } }, 'HAR'),
       h('button', { on: { click: () => exportNet('json') } }, 'JSON'),
-      h('button', { on: { click: () => exportNet('csv') } }, 'CSV')
+      h('button', { on: { click: () => exportNet('csv') } }, 'CSV'),
+      h('button', { on: { click: () => exportNet('openapi') } }, 'OpenAPI + types')
     ),
     h(
       'details',

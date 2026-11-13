@@ -43,12 +43,41 @@ async function homeGlance(box) {
   await add(async () => {
     const all = await chrome.permissions.contains({ origins: ['<all_urls>'] }).catch(() => false);
     const n = (s.siteAllowlist || []).length;
+    // In limited mode the page in front can be allowed with one click. The click is the request, so
+    // nothing is granted by a page or by a timer.
+    // Read the tab without activeTab(), which also changes the page DevForge is working on.
+    const tab = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).then((list) => list[0] || null, () => null);
+    const origin = tab ? DFSiteAccess.originOf(tab.url) : null;
+    const offered = s.allowAllSites === false && origin && !(s.siteAllowlist || []).includes(origin);
     return card(
       'home-card-access',
       'Site access',
       h('div', { class: s.allowAllSites !== false ? 'sev-ok' : 'sev-warn' }, s.allowAllSites !== false ? 'All sites allowed' : 'Limited to ' + n + ' site' + (n === 1 ? '' : 's')),
       h('div', { class: 'sev-info' }, all ? 'Chrome grants DevForge all-sites access.' : 'Chrome limits DevForge to sites chosen in its extension settings.'),
-      h('div', { class: 'row' }, h('button', { class: 'sec-mini', on: { click: () => show('settings') } }, 'Change'))
+      offered ? h('div', { class: 'sev-info' }, 'The page in front (' + origin + ') is not on your list.') : null,
+      h(
+        'div',
+        { class: 'row' },
+        offered
+          ? h(
+              'button',
+              {
+                id: 'home-allow-site',
+                class: 'primary',
+                on: {
+                  click: () => {
+                    s.siteAllowlist = [...new Set([...(s.siteAllowlist || []), origin])];
+                    saveSettings();
+                    toast('Allowed ' + origin);
+                    show('home');
+                  },
+                },
+              },
+              'Allow this site'
+            )
+          : null,
+        h('button', { class: 'sec-mini', on: { click: () => show('settings') } }, 'Change')
+      )
     );
   });
 
