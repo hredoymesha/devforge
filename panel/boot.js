@@ -5,6 +5,7 @@ function applyTheme() {
   const t = DF.state.settings.theme;
   const effective = t === 'system' ? (systemDark.matches ? 'dark' : 'light') : t;
   document.documentElement.dataset.theme = effective;
+  document.documentElement.dataset.density = DF.state.settings.density === 'compact' ? 'compact' : 'comfortable';
   const b = $('#btn-theme');
   b.textContent = t === 'system' ? '◐' : t === 'dark' ? '☾' : '☀';
   b.title = 'Theme: ' + t + ' (click to change)';
@@ -14,7 +15,13 @@ function setTheme(t) {
   applyTheme();
   saveSettings();
 }
+function setDensity(d) {
+  DF.state.settings.density = d === 'compact' ? 'compact' : 'comfortable';
+  applyTheme();
+  saveSettings();
+}
 systemDark.addEventListener('change', applyTheme);
+$('#version').textContent = 'v' + versionLabel();
 
 const ORDER = [
   'home',
@@ -330,6 +337,14 @@ registerCommand('redo', 'Redo page change', async () => {
 registerCommand('reset', 'Reset all page changes', async () => {
   await call('resetAll');
   toast('All page changes reverted');
+});
+registerCommand('about', 'About DevForge', () => {
+  show('settings');
+  const about = $('#about');
+  if (about) {
+    about.scrollIntoView({ block: 'start' });
+    about.querySelector('h2').focus();
+  }
 });
 registerCommand('report', 'Export developer report', async () => {
   download(

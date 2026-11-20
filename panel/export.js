@@ -325,7 +325,7 @@ registerTab('export', 'Export', async (v) => {
       h(
         'div',
         { class: 'sev-info' },
-        'Full page stitches scrolled captures (fixed/sticky bars are kept on the first slice only); very long pages are capped at 20 screens. Uses the activeTab permission only.'
+        'Full page stitches scrolled captures (fixed/sticky bars are kept on the first slice only); very long pages are capped at 20 screens. Needs access to this tab (a click on the toolbar icon or all-sites access).'
       ),
       h('div', { id: 'shot-out' })
     ),

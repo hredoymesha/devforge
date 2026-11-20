@@ -55,6 +55,10 @@ registerTab('data', 'Data', async (v) => {
     }
     if (kind === 'repeated' && !data.found)
       return out.append(h('div', { class: 'empty' }, data.note));
+    if (!rows.length) {
+      const what = { links: 'No links', images: 'No images', tables: 'No tables', forms: 'No form fields', headings: 'No headings', repeated: 'No repeated cards or lists', metadata: 'No meta tags' }[kind] || 'Nothing';
+      return out.append(h('div', { class: 'empty', id: 'data-empty' }, what + ' found ' + (scope.value === 'sel' ? 'in the selected element.' : 'on this page.')));
+    }
     out.append(
       h(
         'div',

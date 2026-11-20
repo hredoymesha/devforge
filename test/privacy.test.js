@@ -27,12 +27,14 @@ test('the storage keys named in PRIVACY.md exist in the code', () => {
   assert.ok(code.includes("indexedDB.open(DB") && /DB = 'devforge'/.test(read('lib/store.js')));
 });
 
-test('the AI sites named in PRIVACY.md are the ones in lib/ai.js, and the prefill limit is right', () => {
+test('the AI sites named in PRIVACY.md are the ones in lib/ai.js, and no prompt is put in an address', () => {
   const ai = read('lib/ai.js');
   for (const host of ['claude.ai', 'chatgpt.com', 'gemini.google.com', 'copilot.microsoft.com']) {
     assert.ok(privacy.includes(host) && ai.includes(host), host);
   }
-  assert.ok(/max: 6000/.test(ai) && /6,000 characters/.test(privacy));
+  const DFAI = require('../lib/ai.js');
+  for (const k of Object.keys(DFAI.PROVIDERS)) assert.equal(DFAI.launchPlan(k).url, DFAI.PROVIDERS[k].url, k);
+  assert.ok(!/[?&]q=|encodeURIComponent/.test(ai) && /Nothing is put in that page's address/.test(privacy));
 });
 
 test('the code contains no fixed web address that data could be sent to, other than the AI sites', () => {
@@ -40,4 +42,28 @@ test('the code contains no fixed web address that data could be sent to, other t
   const allowed = /^(claude\.ai|chatgpt\.com|gemini\.google\.com|copilot\.microsoft\.com|developer\.mozilla\.org|cheatsheetseries\.owasp\.org|owasp\.org|www\.w3\.org|github\.com|nvd\.nist\.gov|cve\.mitre\.org|web\.dev|infosec\.exchange|cdn\.jsdelivr\.net|([a-z0-9.-]*\.)?example\.[a-z]+|placeholder\.invalid|www\.rfc-editor\.org|cdn\.tailwindcss\.com|www\.googletagmanager\.com|www\.google-analytics\.com|[a-z.]*polyfill\.io|code\.jquery\.com|ajax\.googleapis\.com|cdnjs\.cloudflare\.com|unpkg\.com|stackpath\.bootstrapcdn\.com|maxcdn\.bootstrapcdn\.com)$/i;
   const odd = [...urls].filter((u) => !allowed.test(u));
   assert.deepEqual(odd, []);
+});
+
+test('Settings, README and PRIVACY.md give the same reason for each permission, and cover the manifest', () => {
+  const unq = (s) => s.replace(/`/g, '').trim();
+  const mdRows = (text) => {
+    const part = text.slice(text.search(/^## Permissions/m));
+    return Object.fromEntries([...part.matchAll(/^\| (`[a-zA-Z]+`(?: \(optional\))?|Site access \(all sites\)) \| (.+) \|$/gm)].map((m) => [unq(m[1]), m[2]]));
+  };
+  const settings = read('panel/settings.js');
+  const block = settings.slice(settings.indexOf("['Permission', 'Why'],") + 24, settings.indexOf("['debugger (not requested)'"));
+  const fromPanel = Object.fromEntries([...block.matchAll(/\['([^']+)', '((?:[^'\\]|\\.)*)'\]/g)].map((m) => [m[1], m[2].replace(/\\'/g, "'")]));
+  const fromReadme = mdRows(read('README.md'));
+  const fromPrivacy = mdRows(privacy);
+  const want = [...manifest.permissions, ...(manifest.optional_permissions || []).map((p) => p + ' (optional)'), 'Site access (all sites)'].sort();
+  assert.deepEqual(Object.keys(fromPanel).sort(), want);
+  assert.deepEqual(fromReadme, fromPanel);
+  assert.deepEqual(fromPrivacy, fromPanel);
+});
+
+test('the one address DevForge never loads is explained where it is written and in the docs', () => {
+  const gen = read('lib/gen.js');
+  const at = gen.indexOf('https://cdn.tailwindcss.com');
+  assert.ok(at > 0 && /never loads or calls it/.test(gen.slice(at - 600, at)));
+  assert.ok(/`cdn\.tailwindcss\.com` in `lib\/gen\.js`/.test(privacy) && /`cdn\.tailwindcss\.com` in `lib\/gen\.js`/.test(read('README.md')));
 });

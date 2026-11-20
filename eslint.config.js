@@ -116,9 +116,9 @@ module.exports = [
     rules: { ...security, 'preserve-caught-error': 'off', 'no-unused-vars': ['warn', { args: 'none', caughtErrors: 'none' }], 'no-script-url': 'off' /* tests feed javascript: URLs to the validators on purpose */ },
   },
   {
-    // The e2e driver is Node code, but most of its callbacks are serialised and run inside the panel
-    // or the page, so those names are known too.
-    files: ['e2e/**/*.js'],
+    // The e2e driver and the live check are Node code, but most of their callbacks are serialised and
+    // run inside the panel or the page, so those names are known too.
+    files: ['e2e/**/*.js', 'tools/livecheck/**/*.js'],
     languageOptions: { sourceType: 'commonjs', ecmaVersion: 'latest', globals: { ...globals.node, ...globals.browser, chrome: 'readonly', ...safeExports, ...panelGlobals } },
     rules: { ...security, 'preserve-caught-error': 'off', 'no-unused-vars': ['warn', { args: 'none', caughtErrors: 'none' }], 'no-script-url': 'off' },
   },

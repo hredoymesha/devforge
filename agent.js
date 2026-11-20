@@ -6,7 +6,7 @@
 (() => {
   if (window.__DF && window.__DF.version) return;
 
-  const AGENT_VERSION = 15; // must match AGENT_VERSION in panel/core.js
+  const AGENT_VERSION = 16; // must match AGENT_VERSION in panel/core.js
   const MAX_NODES = 20000;
   const state = {
     selected: null,
@@ -2874,15 +2874,19 @@
     }
     return { drop, finalVals, anims };
   }
+  const RECREATE_MAX = 2500;
   function recreate(h, opts) {
     opts = opts || {};
     const root = target(h);
+    // Above the cap the walk below stops early and the copy is a fragment, so say so before starting.
+    const count = [root, ...dom.querySelectorAll(root, '*')].filter((el) => !/^(script|style|link|meta|noscript|template)$/.test(lc(dom.tagName(el)))).length;
+    if (count > RECREATE_MAX) throw new Error('This part has ' + count.toLocaleString('en') + ' elements. Recreate works on up to ' + RECREATE_MAX.toLocaleString('en') + '. Pick a smaller part, such as one section or card.');
     const nodes = [];
     const keyframeNames = new Set();
     const walker = (el, parentComputed) => {
       // Hard cap: computed-style diffing is expensive and a huge subtree (say <body>) would
       // otherwise freeze the page for seconds.
-      if (nodes.length >= 2500) return null;
+      if (nodes.length >= RECREATE_MAX) return null;
       const tag = lc(dom.tagName(el));
       if (/^(script|style|link|meta|noscript|template)$/.test(tag)) return null;
       nodes.push(el);

@@ -261,3 +261,12 @@ test('weight() stops early on a huge value and counts bytes of binary data', () 
   cyc.self = cyc;
   assert.ok(S.weight(cyc, 1e6) > 0, 'a self-referencing value ends instead of looping');
 });
+
+test('density: settings from 4.4 get the comfortable default, compact is kept and anything else is named', () => {
+  const defaults = { ...DEFAULTS, density: 'comfortable' };
+  assert.equal(S.settings({ theme: 'dark' }, defaults).value.density, 'comfortable');
+  assert.equal(S.settings({ density: 'compact' }, defaults).value.density, 'compact');
+  const bad = S.settings({ density: 'tiny' }, defaults);
+  assert.equal(bad.value.density, 'comfortable');
+  assert.ok(bad.ignored.some((l) => l.startsWith('density:')));
+});

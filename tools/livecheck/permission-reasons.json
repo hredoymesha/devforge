@@ -1,0 +1,18 @@
+{
+  "_note": "One plain reason per permission, written for the Chrome Web Store 'Privacy practices' tab. The audit fails if a permission in the manifest has no reason here, and warns about a reason for a permission that is not in the manifest.",
+  "single_purpose": "DevForge is a developer workbench in the browser's side panel. It lets a web developer inspect a page, watch its network traffic, measure performance, extract design tokens, export parts of a page and run read-only security checks, all on the user's own computer.",
+  "permissions": {
+    "scripting": "Puts DevForge's page agent and network recorder into the page the user works on, only when a tool needs them. The agent reads the DOM, styles and performance data that the panel shows.",
+    "storage": "Keeps the user's settings, interception rules, performance history and scan records on the device. Nothing is sent to a server.",
+    "sidePanel": "Shows DevForge in the browser's side panel.",
+    "clipboardWrite": "Copies code, selectors and prompts when the user clicks a Copy button. Chrome shows this as \"Modify data you copy and paste\"; DevForge only writes to the clipboard and never reads it.",
+    "contextMenus": "Adds one right-click entry, 'Inspect with DevForge'.",
+    "declarativeNetRequest": "Blocks DevForge's own downloads from reaching private, loopback or link-local addresses, at every redirect step. It only blocks. It cannot read or change pages. Chrome shows this as \"Block content on any page\"; the rule matches only requests DevForge itself starts (initiatorDomains is the extension's own id).",
+    "cookies": "Optional. Asked for only from the Security tab, for one site, to read whether cookies are HttpOnly, Secure and SameSite. Cookie values are never read into reports."
+  },
+  "host_permissions": {
+    "<all_urls>": "DevForge is used on whatever site the developer is building or debugging, so the site is not known in advance. Host access is used to: run the page agent in the tab when the user picks or inspects an element; read the page's stylesheets, scripts and images from other origins when the user exports a part or the page; record network requests from page start on a site where the user turns that on; and take screenshots of the tab. DevForge has no server of its own and collects no user data. The only requests it makes go to the site being worked on, when the user starts an export, a download or a security check, and are limited in size and number. Settings → Site access can limit DevForge to sites the user lists, and Chrome's own Site access setting for the extension still applies."
+  },
+  "remote_code": "No. All code is in the package. Nothing is downloaded and run.",
+  "data_use": "DevForge does not collect, sell or transfer user data. It has no server, account or analytics. Settings and saved items stay in the user's browser profile."
+}

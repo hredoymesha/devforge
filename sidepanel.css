@@ -1,18 +1,22 @@
 /* DevForge side panel. Theme tokens first; data-theme is set from settings (system/dark/light). */
 :root {
-  --bg: #0f1218;
-  --bg2: #161b24;
-  --bg3: #1e2530;
-  --bg4: #263040;
-  --fg: #e6e9ef;
-  --mut: #8b95a7;
-  --acc: #5b93ff;
-  --acc-fg: #0b1020; /* white on this blue is only 3.0:1; dark text is 6.4:1 */
-  --ok: #3fb67a;
-  --warn: #e0a82e;
-  --err: #ef5b5b;
-  --bd: #2a3342;
-  --sel: rgba(91, 147, 255, 0.16);
+  --bg: #111113;
+  --bg2: #18181b;
+  --bg3: #232327;
+  --bg4: #2c2c31;
+  --fg: #ececef;
+  --mut: #a1a1aa;
+  --acc: #6b9bff;
+  --acc-hover: #84abff;
+  --acc-fg: #0b1020; /* white on this blue is under 3:1; dark text is over 6:1 */
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --err: #f87171;
+  --err-bd: #7f2d2d;
+  --err-bg: rgba(248, 113, 113, 0.1);
+  --bd: #27272a;
+  --bd-strong: #3f3f46;
+  --sel: rgba(107, 155, 255, 0.14);
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --radius: 6px;
@@ -26,21 +30,47 @@
   color-scheme: dark;
 }
 :root[data-theme='light'] {
-  --bg: #ffffff;
-  --bg2: #f4f6fa;
-  --bg3: #e9edf4;
-  --bg4: #dde3ee;
-  --fg: #1a202c;
-  --mut: #5b6678;
-  --acc: #1d4fd0;
+  --bg: #f6f7f9;
+  --bg2: #ffffff;
+  --bg3: #eef0f3;
+  --bg4: #e3e6eb;
+  --fg: #18181b;
+  --mut: #52525b;
+  --acc: #2563eb;
+  --acc-hover: #1d4ed8;
   --acc-fg: #fff;
-  --ok: #137435;
-  --warn: #8f4106;
-  --err: #c62828;
-  --bd: #d5dbe6;
-  --sel: rgba(37, 99, 235, 0.1);
+  --ok: #15803d;
+  --warn: #a16207;
+  --err: #b91c1c;
+  --err-bd: #f1b4b4;
+  --err-bg: #fef2f2;
+  --bd: #e4e4e7;
+  --bd-strong: #c9c9cf;
+  --sel: rgba(37, 99, 235, 0.08);
   --shadow: 0 8px 28px rgba(15, 23, 42, 0.18);
   color-scheme: light;
+}
+/* One spacing scale and one type scale. Compact density (Settings → Appearance) tightens spacing only. */
+:root {
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --t-sm: 12px;
+  --t-md: 13px;
+  --t-lg: 15px;
+  --t-xl: 18px;
+  --ctl-y: 5px;
+  --ctl-x: 10px;
+}
+:root[data-density='compact'] {
+  --s2: 6px;
+  --s3: 8px;
+  --s4: 12px;
+  --s5: 16px;
+  --ctl-y: 3px;
+  --ctl-x: 8px;
 }
 * {
   box-sizing: border-box;
@@ -54,7 +84,7 @@ body {
   background: var(--bg);
   color: var(--fg);
   font:
-    13px/1.45 system-ui,
+    var(--t-md) / 1.45 system-ui,
     -apple-system,
     'Segoe UI',
     sans-serif;
@@ -74,7 +104,7 @@ textarea {
   background: var(--bg3);
   border: 1px solid var(--bd);
   border-radius: var(--radius);
-  padding: 4px 9px;
+  padding: var(--ctl-y) var(--ctl-x);
   min-width: 0;
   max-width: 100%;
 }
@@ -88,13 +118,15 @@ input[type='radio'] {
 button {
   cursor: pointer;
   white-space: nowrap;
+  font-weight: 500;
+  background: var(--bg2);
   transition:
     background 0.12s,
     border-color 0.12s;
 }
 button:hover:not(:disabled) {
-  border-color: var(--acc);
-  background: var(--bg4);
+  border-color: var(--bd-strong);
+  background: var(--bg3);
 }
 button:active:not(:disabled) {
   transform: translateY(1px);
@@ -103,18 +135,25 @@ button:active:not(:disabled) {
   outline: 2px solid var(--acc);
   outline-offset: 1px;
 }
+/* Three kinds of button: primary (the main action), plain (everything else) and danger. */
 button.primary {
   background: var(--acc);
   border-color: var(--acc);
   color: var(--acc-fg);
+  font-weight: 600;
 }
 button.primary:hover:not(:disabled) {
-  background: var(--acc);
-  filter: brightness(1.1);
+  background: var(--acc-hover);
+  border-color: var(--acc-hover);
 }
 button.danger {
-  border-color: var(--err);
+  background: transparent;
+  border-color: var(--err-bd);
   color: var(--err);
+}
+button.danger:hover:not(:disabled) {
+  background: var(--err-bg);
+  border-color: var(--err);
 }
 button.rec {
   border-color: var(--err);
@@ -162,6 +201,14 @@ label {
   white-space: nowrap;
   cursor: pointer;
 }
+/* A label that holds a file picker or a menu may wrap, or the control runs off a narrow panel. */
+label:has(> input[type='file'], > select) {
+  white-space: normal;
+  max-width: 100%;
+}
+input[type='file'] {
+  max-width: 100%;
+}
 kbd {
   font-family: var(--mono);
   font-size: 11px;
@@ -197,6 +244,14 @@ kbd {
 .logo {
   color: var(--acc);
   margin-right: 4px;
+}
+.version {
+  font: 11px/1.4 var(--mono);
+  color: var(--mut);
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  padding: 0 4px;
+  white-space: nowrap;
 }
 .target {
   flex: 1;
@@ -347,7 +402,7 @@ main {
   flex: 1;
   overflow: auto;
   overflow-x: hidden;
-  padding: 10px;
+  padding: var(--s3);
 }
 #view:focus {
   outline: none;
@@ -355,11 +410,9 @@ main {
 
 /* ---------- layout ---------- */
 h2 {
-  margin: 16px 0 6px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.7px;
-  color: var(--mut);
+  margin: var(--s5) 0 var(--s2);
+  font-size: var(--t-md);
+  color: var(--fg);
   font-weight: 600;
 }
 #view > .view-host > :first-child h2,
@@ -368,10 +421,10 @@ h2 {
 }
 .row {
   display: flex;
-  gap: 6px;
+  gap: var(--s2);
   align-items: center;
   flex-wrap: wrap;
-  margin: 6px 0;
+  margin: var(--s2) 0;
 }
 .row.center {
   justify-content: center;
@@ -383,7 +436,7 @@ h2 {
 }
 .toolbar {
   display: flex;
-  gap: 6px;
+  gap: var(--s2);
   align-items: center;
   flex-wrap: wrap;
   padding-bottom: 8px;
@@ -393,9 +446,10 @@ h2 {
 .card {
   background: var(--bg2);
   border: 1px solid var(--bd);
-  border-radius: 8px;
-  padding: 8px 10px;
-  margin: 6px 0;
+  border-radius: var(--radius);
+  padding: var(--s3);
+  margin: var(--s2) 0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 .card.sev-error {
   border-color: var(--err);
@@ -459,6 +513,12 @@ th {
   top: 0;
   background: var(--bg);
   z-index: 1;
+}
+/* Severity and rule names are short words; long code in the Issue column must not squeeze them. */
+table.audit-issues td:nth-child(1),
+table.audit-issues td:nth-child(2) {
+  overflow-wrap: normal;
+  white-space: nowrap;
 }
 table.compact td,
 table.compact th {
@@ -1529,9 +1589,9 @@ button.link {
   width: 22px;
   height: 22px;
   margin-right: 6px;
-  border-radius: 6px;
-  background: linear-gradient(135deg, var(--acc), #7c5cff);
-  color: #fff;
+  border-radius: 5px;
+  background: var(--acc);
+  color: var(--acc-fg);
   font-size: 13px;
   line-height: 1;
 }
@@ -1545,8 +1605,8 @@ button .ico {
 
 /* ---------- Home ---------- */
 .home-hero h2 {
-  margin: 4px 0 2px;
-  font-size: 16px;
+  margin: var(--s1) 0 2px;
+  font-size: var(--t-xl);
 }
 .home-hero p {
   margin: 0 0 6px;
@@ -1565,7 +1625,7 @@ button .ico {
 .home-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 8px;
+  gap: var(--s2);
   margin: 8px 0 12px;
 }
 .home-tile {
@@ -1574,9 +1634,10 @@ button .ico {
   align-items: flex-start;
   text-align: left;
   white-space: normal;
-  padding: 9px 10px;
+  padding: var(--s3);
   background: var(--bg2);
-  border-radius: 8px;
+  border: 1px solid var(--bd);
+  border-radius: var(--radius);
 }
 .home-tile:hover:not(:disabled) {
   background: var(--sel);
@@ -1587,9 +1648,9 @@ button .ico {
   place-items: center;
   width: 30px;
   height: 30px;
-  border-radius: 8px;
-  background: var(--sel);
-  color: var(--acc);
+  border-radius: var(--radius);
+  background: var(--bg3);
+  color: var(--fg);
 }
 .home-tile-body {
   display: flex;
@@ -1828,7 +1889,7 @@ button .ico {
 .home-glance {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 8px;
+  gap: var(--s2);
 }
 .home-card {
   display: flex;

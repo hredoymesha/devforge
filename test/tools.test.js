@@ -29,3 +29,9 @@ test('the decrypt page is not in the extension package, so it runs as a plain lo
   const list = pkg.match(/const EXTENSION = \[([^\]]*)\]/)[1];
   assert.doesNotMatch(list, /tools/);
 });
+
+test('the note inside an encrypted export does not point store users at a source folder they do not have', () => {
+  const lib = read('lib/encexport.js');
+  assert.doesNotMatch(lib, /source folder/);
+  assert.match(lib, /download the source from the DevForge repository[^']*tools\/decrypt\.html/);
+});

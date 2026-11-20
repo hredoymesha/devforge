@@ -1,5 +1,71 @@
 # Changelog
 
+## 4.5.0
+
+The first version prepared for the Chrome Web Store. No new tools.
+
+### Permissions
+- `activeTab` is removed. With Chrome's site access set to "On click", a click on the toolbar icon, the
+  right-click entry or either shortcut gives DevForge the tab without it, screenshots included. Checked in
+  Chrome for Testing 116, 130 and 158. All-sites access is unchanged, and no permission was added.
+
+### Fixed
+- With site access set to "On click", Home stayed on "Checking this page…" on a tab DevForge could not reach,
+  and every tool waited without an answer. Chrome neither runs nor refuses the script in that case. DevForge
+  now stops at once and says how to give access.
+- The no-access message pointed at DevForge's Settings, which cannot change Chrome's site access. It now
+  names the toolbar icon and chrome://extensions.
+- On a local file with "Allow access to file URLs" off, Chrome hides the tab's address, so the old message
+  for local files never appeared. The no-access message now names that switch when it is off.
+- On browser pages (chrome://, a new tab, about:blank) DevForge told you to click the toolbar icon, which
+  cannot help there. It now says that browsers keep extensions off their own pages.
+- On a narrow panel, the file pickers in Export and Site and the clean-up menu in Settings ran past the
+  right edge. Their labels now wrap.
+- Home said "Nothing leaves your browser". A replayed request sends data when you start it, so it now says
+  that nothing is sent unless you start it.
+- The Playground showed the word "undefined" in its CSS and JavaScript boxes when it was opened from an AI
+  reply that had only one language. Missing languages are now empty boxes. (Also in 4.4.2.)
+- The Audit table broke short words letter by letter ("war" / "n", "color-" / "contrast") when the Issue
+  column held long code. The Sev and Rule cells now stay on one line. (Also in 4.4.2.)
+- Recreate on a part with more than 2,500 elements stopped part-way and showed a broken preview. It now says
+  how many elements the part has and asks for a smaller part, before it starts.
+- The Data tab said "0 row(s)" when it found nothing. It now says what it looked for, such as "No tables
+  found on this page."
+- The note inside an encrypted export pointed at a source folder that people who install from the store do
+  not have. It now says to download DevForge's source code and open `tools/decrypt.html`.
+- CSV exports escape the header row as well as the cells. The column names are fixed today, so no file
+  changes; this keeps a page-derived name safe later.
+
+### Changed
+- The AI tab's *Copy & open* no longer puts the prompt in the AI site's address. It copies the prompt and
+  opens the site's start page; the site gets the prompt only when you paste it there and send it. The
+  warning above the prompt said the opposite of what happened before, and now says what happens.
+- The page agent is version 16. Pages with an older copy get the new one on their next use.
+- New look: neutral greys with one blue accent, lighter borders, one spacing scale and one type scale,
+  sentence-case section titles, and three kinds of button (main, plain, danger). Nothing moved and no
+  behaviour changed.
+- Settings → Appearance has a density choice. Comfortable is the default; Compact tightens the spacing.
+- The version is shown in the toolbar tooltip ("Open DevForge 4.5.0"), as a badge in the panel header and
+  in a new About card in Settings, which can also check the page agent in the current tab. "About DevForge"
+  is in the command palette. The manifest has `version_name`, and `npm run check` fails when it does not
+  start with the version.
+- The Guide's Settings card mentions density and the About card, and its common problems explain the
+  no-access message.
+- Settings, the README and PRIVACY.md now give the same reason for each permission. A unit test compares
+  them with each other and with the manifest.
+- PRIVACY.md and the README explain the one web address in the code that DevForge never loads:
+  `cdn.tailwindcss.com`, written into the `index.html` of a Tailwind export.
+- PRIVACY.md has a short "Page content" section: what DevForge reads, and the one way DevForge sends page
+  content (a request you replay). The permission texts also explain Chrome's two install warnings,
+  "Block content on any page" and "Modify data you copy and paste".
+
+### Development
+- The live check that tests a release ZIP before it goes to the store is now in `tools/livecheck/`, with its
+  own `package.json` and lockfile (Playwright 1.63.0). It is not part of the extension ZIP. Lint and the
+  style check cover it, and a unit test runs its package check on the ZIP `npm run package` makes and
+  fails when a permission has no written reason. It now also reads the text inside text boxes, opens the
+  Playground the way an AI reply does, and its self-test proves both. The demo page it uses was tidied.
+
 ## 4.4.2
 
 ### Fixed
@@ -63,6 +129,7 @@
 - SARIF and ASVS are chapter-level. Requirement numbers are not given.
 - The Owner-key option for encrypted exports is not available. The decrypt page works with the passphrase only.
 - Resources that load before watching starts are listed only if the browser still has their timing.
+
 ## 4.3.0
 
 ### New

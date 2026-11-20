@@ -1249,6 +1249,232 @@ async function main() {
       await target.close();
       await panel.close();
     }
+
+    /* ---------- version shown to people ---------- */
+    console.log('\nVersion');
+    if (run('Version')) {
+      const label = manifest.version_name || manifest.version;
+      check('the toolbar tooltip names the version', (await env.sw.evaluate(() => chrome.action.getTitle({}))) === 'Open DevForge ' + label);
+      const { panel } = await openPanel(env, vuln);
+      check('the header badge shows the version from the manifest', (await panel.locator('#version').innerText()) === 'v' + label);
+      for (const theme of ['dark', 'light']) {
+        await panel.evaluate((t) => setTheme(t), theme);
+        const box = await panel.locator('#version').boundingBox();
+        check('the badge is visible in the ' + theme + ' theme', box && box.width > 20 && box.height > 8, JSON.stringify(box));
+      }
+      await panel.evaluate(() => call('ping'));
+      await panel.click('#btn-palette');
+      await panel.fill('#pal-input', 'about');
+      await panel.keyboard.press('Enter');
+      await panel.waitForSelector('#about');
+      check('"About DevForge" in the palette opens Settings with focus on the About card', await panel.evaluate(() => DF.state.tab === 'settings' && document.activeElement === document.querySelector('#about h2')));
+      check('opening the About card does not run anything in the tab', (await panel.locator('#about-agent').innerText()) === 'not checked');
+      await panel.click('#about-check');
+      await panel.waitForFunction(() => /matches|older|not loaded|cannot/.test((document.querySelector('#about-agent') || {}).textContent || ''));
+      const about = await panel.locator('#about').innerText();
+      check('the About card lists the version, version name and agent version', about.includes(manifest.version) && about.includes(label) && /Page agent version\s+\d+/.test(about), about);
+      check('the About card says the agent in the tab matches the panel', /matches the panel/.test(await panel.locator('#about-agent').innerText()));
+      await panel.close();
+    }
+
+    /* ---------- Playground opened from an AI reply ---------- */
+    console.log('\nPlayground from an AI reply');
+    if (run('PlayFromAI')) {
+      const { panel } = await openPanel(env, vuln);
+      await panel.evaluate(() => {
+        DF.state.pg = undefined;
+        show('ai');
+      });
+      await panel.fill('#ai-reply', 'Try this:\n```css\nbody { color: rebeccapurple }\n```\n');
+      await panel.click('button:has-text("Validate reply")');
+      await panel.click('button:has-text("Open in Playground")');
+      await panel.waitForFunction(() => DF.state.tab === 'play');
+      const boxes = await panel.evaluate(() => [...document.querySelectorAll('#view textarea')].map((t) => t.value));
+      check('a reply with only CSS opens the Playground with empty HTML and JavaScript boxes, not "undefined"', !boxes.some((b) => /^(undefined|null)$/.test(b.trim())) && boxes.some((b) => /rebeccapurple/.test(b)), JSON.stringify(boxes));
+      await panel.evaluate(() => {
+        DF.state.pg = { html: '<b>x</b>' };
+        show('play');
+      });
+      const saved = await panel.evaluate(() => [...document.querySelectorAll('#view textarea')].map((t) => t.value));
+      check('a Playground state with one language shows the others as empty boxes', saved.filter((b) => b === '').length === 2 && saved.includes('<b>x</b>'), JSON.stringify(saved));
+
+      // Copy & open must open the site's start page with nothing of the prompt in its address.
+      await panel.evaluate(async () => setSelection(await call('selectBySelector', 'body')));
+      await panel.evaluate(() => show('ai'));
+      await panel.click('button:has-text("Build prompt")');
+      await panel.waitForSelector('#ai-text');
+      await panel.evaluate(() => {
+        window.__opened = [];
+        chrome.tabs.create = async (o) => {
+          window.__opened.push(o.url);
+          return {};
+        };
+      });
+      await panel.click('button:has-text("Copy & open")');
+      await panel.click('#guard-keep', { timeout: 2000 }).catch(() => {});
+      await panel.waitForFunction(() => window.__opened.length > 0, null, { timeout: 10000 });
+      const opened = await panel.evaluate(() => window.__opened[0]);
+      check('Copy & open opens the plain start page of the AI site, with no prompt in the address', opened === 'https://claude.ai/new', opened);
+      await panel.close();
+    }
+
+    /* ---------- Audit table with long, unbreakable text ---------- */
+    console.log('\nAudit table layout');
+    if (run('AuditLayout')) {
+      const { panel } = await openPanel(env, vuln);
+      await panel.setViewportSize({ width: 540, height: 800 });
+      const cells = await panel.evaluate(() => {
+        show('audit');
+        const t = issueTable([{ severity: 'warn', rule: 'color-contrast', message: 'Low contrast', snippet: '<div class="' + 'x'.repeat(400) + '">' }, { severity: 'error', rule: 'image-alt', message: 'No alt', snippet: 'y'.repeat(300) }], () => {});
+        document.querySelector('#view').append(t);
+        // A cell is broken when it is narrower than its text set on one line.
+        const oneLine = (td) => {
+          const s = document.createElement('span');
+          s.style.cssText = 'position:absolute;white-space:nowrap;visibility:hidden';
+          s.textContent = td.textContent;
+          td.append(s);
+          const w = s.getBoundingClientRect().width;
+          s.remove();
+          return td.clientWidth >= w;
+        };
+        return {
+          rows: [...t.querySelectorAll('tbody tr')].map((tr) => ({ sev: tr.cells[0].textContent, sevOk: oneLine(tr.cells[0]), rule: tr.cells[1].textContent, ruleOk: oneLine(tr.cells[1]) })),
+          side: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+        };
+      });
+      check('at 540 px with long code in the Issue column, the Sev and Rule cells stay on one line', cells.rows.every((r) => r.sevOk && r.ruleOk), JSON.stringify(cells.rows));
+      check('and the panel does not scroll sideways', !cells.side);
+      await panel.setViewportSize({ width: 320, height: 800 });
+      check('at 320 px the table still fits without sideways scrolling', await panel.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1));
+      await panel.close();
+    }
+
+    /* ---------- Recreate on a part that is too big ---------- */
+    console.log('\nRecreate size limit');
+    if (run('RecreateCap')) {
+      const { panel, target } = await openPanel(env, vuln);
+      await target.evaluate(() => {
+        const box = document.createElement('div');
+        for (let i = 0; i < 3000; i++) box.appendChild(document.createElement('span')).textContent = 'w' + i;
+        document.body.appendChild(box);
+      });
+      await panel.evaluate(async () => setSelection(await call('selectBySelector', 'body')));
+      await panel.evaluate(() => show('recreate'));
+      await panel.click('button:has-text("Recreate & compare")');
+      await panel.waitForSelector('.card.sev-error', { timeout: 60000 });
+      const msg = await panel.locator('.card.sev-error').innerText();
+      check('a part over the limit gets a plain message with its element count', /This part has [\d,]+ elements\. Recreate works on up to 2,500\. Pick a smaller part/.test(msg), msg);
+      check('and no half-built preview is shown', (await panel.locator('#view iframe').count()) === 0);
+      await panel.close();
+    }
+
+    /* ---------- Data tab when nothing is found ---------- */
+    console.log('\nData tab empty state');
+    if (run('DataEmpty')) {
+      const { panel, target } = await openPanel(env, vuln);
+      await target.evaluate(() => document.querySelectorAll('table').forEach((t) => t.remove()));
+      await panel.evaluate(() => show('data'));
+      await panel.click('#view button:has-text("Tables")');
+      await panel.waitForSelector('#data-empty');
+      const text = await panel.locator('#data-empty').innerText();
+      check('a kind with nothing on the page says what was looked for, not "0 row(s)"', text === 'No tables found on this page.' && !/0 row/.test(await panel.locator('#view').innerText()), text);
+      await panel.close();
+    }
+
+    /* ---------- density ---------- */
+    console.log('\nDensity');
+    if (run('Density')) {
+      let { panel } = await openPanel(env, vuln);
+      check('a new install uses the comfortable density', (await panel.evaluate(() => document.documentElement.dataset.density)) === 'comfortable');
+      const pad = () => panel.evaluate(() => parseFloat(getComputedStyle(document.querySelector('main')).paddingTop));
+      const roomy = await pad();
+      await panel.evaluate(() => show('settings'));
+      await panel.selectOption('#set-density', 'compact');
+      check('choosing compact in Settings tightens the spacing at once', (await panel.evaluate(() => document.documentElement.dataset.density)) === 'compact' && (await pad()) < roomy, roomy + ' -> ' + (await pad()));
+      await panel.waitForTimeout(400);
+      await panel.reload();
+      await panel.waitForFunction(() => typeof show === 'function' && document.documentElement.dataset.density);
+      check('the choice is kept after the panel reloads', (await panel.evaluate(() => document.documentElement.dataset.density)) === 'compact');
+      await panel.evaluate(() => setDensity('comfortable'));
+      await panel.close();
+    }
+
+    /* ---------- Chrome's site access set to "On click" (changes the profile, so it runs last) ---------- */
+    console.log('\nSite access "On click"');
+    if (run('OnClick')) {
+      const setAccess = async (mode) => {
+        const page = await env.ctx.newPage();
+        await page.goto('chrome://extensions/?id=' + env.id);
+        await page.evaluate(([id, m]) => new Promise((res, rej) => chrome.developerPrivate.updateExtensionConfiguration({ extensionId: id, hostAccess: m }, () => (chrome.runtime.lastError ? rej(new Error(chrome.runtime.lastError.message)) : res()))), [env.id, mode]);
+        await page.close();
+      };
+      {
+        // With all-sites access a browser page still hides its address; the message must not send people to the toolbar icon.
+        const page = await env.ctx.newPage();
+        await page.goto('chrome://version/');
+        const p2 = await env.ctx.newPage();
+        await p2.goto(`chrome-extension://${env.id}/sidepanel.html`);
+        const vmsg = await p2.evaluate(async () => {
+          const me = (await chrome.tabs.getCurrent()).id;
+          const tab = (await chrome.tabs.query({})).filter((x) => x.id !== me).sort((a, b) => b.id - a.id)[0];
+          chrome.tabs.query = async () => [await chrome.tabs.get(tab.id)];
+          return exec(() => 1).then(() => 'ran', (e) => e.message);
+        });
+        check('on chrome://version the message says browser pages are off limits, not "click the toolbar icon"', /do not allow extensions on their own pages/.test(vmsg) && !/toolbar icon/.test(vmsg), vmsg);
+        await p2.close();
+        await page.close();
+      }
+      await setAccess('ON_CLICK');
+      check('Chrome no longer grants all-sites access', (await env.sw.evaluate(() => chrome.permissions.contains({ origins: ['<all_urls>'] }))) === false);
+      const ids = async () => env.sw.evaluate(async () => (await chrome.tabs.query({})).map((t) => t.id));
+      const before = await ids();
+      const target = await env.ctx.newPage();
+      await target.goto(vuln);
+      const tabId = (await ids()).find((id) => !before.includes(id));
+      const panel = await env.ctx.newPage();
+      await panel.goto(`chrome-extension://${env.id}/sidepanel.html`);
+      await panel.evaluate((id) => {
+        chrome.tabs.query = async () => [await chrome.tabs.get(id)];
+      }, tabId);
+      const t0 = Date.now();
+      const msg = await panel.evaluate(() => Promise.race([exec(() => 1).then(() => 'ran', (e) => e.message), new Promise((r) => setTimeout(() => r('no answer in 5 s'), 5000))]));
+      check('without access, a page call stops at once with the no-access message', /no access to this tab/.test(msg) && Date.now() - t0 < 3000, msg + ' after ' + (Date.now() - t0) + ' ms');
+      check('the message points at the toolbar icon and Chrome\'s own setting, not at DevForge Settings', /toolbar icon/.test(msg) && /chrome:\/\/extensions/.test(msg) && !/in Settings/.test(msg), msg);
+      await panel.evaluate(() => show('home'));
+      await panel.waitForFunction(() => !/Checking/.test((document.querySelector('.home-status') || {}).textContent || 'Checking'), null, { timeout: 5000 }).catch(() => {});
+      const home = await panel.locator('.home-status').innerText();
+      check('Home says DevForge cannot reach the page instead of checking forever', /no access to this tab/.test(home), home);
+      await setAccess('ON_ALL_SITES');
+      const again = await panel.evaluate(() => exec(() => document.title).then((r) => 'ran: ' + r, (e) => e.message));
+      check('with all-sites access back, the same call runs', /^ran: /.test(again), again);
+      await target.close();
+      await panel.close();
+
+      // Chrome hides a file:// tab's address when "Allow access to file URLs" is off, so the message has
+      // to name that switch. Changing it reloads the extension; developer mode keeps it enabled.
+      const cfg = await env.ctx.newPage();
+      await cfg.goto('chrome://extensions/?id=' + env.id);
+      await cfg.evaluate(() => new Promise((res) => chrome.developerPrivate.updateProfileConfiguration({ inDeveloperMode: true }, res)));
+      const back = env.ctx.waitForEvent('serviceworker', { timeout: 20000 });
+      await cfg.evaluate((id) => new Promise((res) => chrome.developerPrivate.updateExtensionConfiguration({ extensionId: id, fileAccess: false }, res)), env.id);
+      await back;
+      await cfg.close();
+      const local = path.join(scratch, 'local.html');
+      fs.writeFileSync(local, '<!doctype html><title>local file</title><p>local</p>');
+      const file = await env.ctx.newPage();
+      await file.goto('file://' + local);
+      const fpanel = await env.ctx.newPage();
+      await fpanel.goto(`chrome-extension://${env.id}/sidepanel.html`);
+      const fmsg = await fpanel.evaluate(async () => {
+        const me = (await chrome.tabs.getCurrent()).id;
+        const tab = (await chrome.tabs.query({})).filter((t) => t.id !== me).sort((a, b) => b.id - a.id)[0];
+        chrome.tabs.query = async () => [await chrome.tabs.get(tab.id)];
+        return Promise.race([exec(() => 1).then(() => 'ran', (e) => e.message), new Promise((r) => setTimeout(() => r('no answer in 5 s'), 5000))]);
+      });
+      check('on a local file without file access, the message names "Allow access to file URLs"', /Allow access to file URLs/.test(fmsg), fmsg);
+      await file.close();
+      await fpanel.close();
+    }
   } finally {
     await env.ctx.close();
     await fx.close();

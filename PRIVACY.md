@@ -25,6 +25,14 @@ and listed in Settings, under Stored data.
 To delete everything: use the clean-up buttons in Settings, delete your projects in Workspace, then
 remove the extension. Removing the extension deletes its storage and its IndexedDB database.
 
+## Page content
+
+DevForge reads the content of the pages you use it on: the DOM, styles, scripts, storage and the network
+requests it records. It handles that content on your computer. The developer of DevForge never receives it.
+DevForge sends page content in one case only, when you start it: a request you replay from the Network tab
+goes to the address in that request. An AI prompt goes to an AI site only when you paste it there yourself.
+Exports, reports and captures are saved as files on your computer.
+
 ## What DevForge sends, and when
 
 Only requests that you start:
@@ -36,11 +44,16 @@ Only requests that you start:
   cookies, within a request budget. **Check again** and the integrity-hash helper work the same way; the
   integrity helper also downloads the page's third-party scripts and stylesheets.
 - **Network tab replay and mocks** send the request you chose to replay, to the address in it.
-- **AI tab.** *Copy only* stays on your computer. *Copy & open* opens the AI site you picked in a new tab
-  (claude.ai, chatgpt.com, gemini.google.com or copilot.microsoft.com). For some sites and prompts under
-  6,000 characters it puts the prompt in that address, so it is sent to that site when the tab opens.
-  Before the prompt is copied, DevForge checks it for credential-like values and offers to mask them.
+- **AI tab.** It only builds a prompt. *Copy only* and *Copy & open* put it on your clipboard; *Copy & open*
+  also opens the start page of the AI site you picked (claude.ai, chatgpt.com, gemini.google.com or
+  copilot.microsoft.com). Nothing is put in that page's address. The site receives the prompt only when you
+  paste it there and send it. Before the prompt is copied, DevForge checks it for credential-like values and
+  offers to mask them.
 - **Exports** are checked for credential-like values before they are saved, and nothing is uploaded.
+
+One web address in the code is not used by DevForge itself: `cdn.tailwindcss.com` in `lib/gen.js`. It is
+text written into the `index.html` of a Tailwind export, so that page loads Tailwind when you open it.
+DevForge never loads it.
 
 DevForge does not send your settings, saved items, browsing history or page contents anywhere else.
 Pages you work on can see the traces listed in [docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md) section 6.
@@ -49,14 +62,13 @@ Pages you work on can see the traces listed in [docs/SECURITY-MODEL.md](docs/SEC
 
 | Permission | Why |
 | --- | --- |
-| `activeTab` | Temporary access to the tab you open DevForge on. |
-| `scripting` | Injects the inspector and the network capture, only when you use them. |
-| `sidePanel` | Shows the panel. |
-| `storage` | Keeps the settings and data above. |
+| `scripting` | Puts DevForge's page agent and network recorder into the page you work on, only when a tool needs them. |
+| `sidePanel` | Shows DevForge in the browser's side panel. |
+| `storage` | Keeps your settings, interception rules, performance history and scan records on this computer. |
 | `contextMenus` | Adds "Inspect with DevForge" to the right-click menu. |
-| `clipboardWrite` | Copies code and prompts when you ask. |
-| `declarativeNetRequest` | Installs a rule that blocks DevForge's own downloads from reaching private, loopback or link-local addresses, including at each redirect step. It only blocks. It cannot read or change pages. |
-| Site access (all sites) | So DevForge works on any page without a prompt for each site (exports, capture from page start, screenshots). In Settings you can limit it to sites you list. Chrome's own Site access control on the extension page still applies. |
+| `clipboardWrite` | Copies code, selectors and prompts when you click a Copy button. Chrome lists it as "Modify data you copy and paste"; DevForge only writes to the clipboard and never reads it. |
+| `declarativeNetRequest` | Blocks DevForge's own downloads from reaching private, loopback or link-local addresses, at every redirect step. It only blocks. It cannot read or change pages. Chrome lists it as "Block content on any page"; DevForge's rule blocks only its own requests. |
+| Site access (all sites) | Lets DevForge work on the page in front without asking for each site. Settings → Site access can limit DevForge to sites you list. Chrome's own Site access setting for the extension still applies. |
 | `cookies` (optional) | Asked for only from the Security tab, for one site, to read whether cookies are HttpOnly, Secure and SameSite. Cookie values are never read into reports. |
 
 The `debugger` permission is not requested.

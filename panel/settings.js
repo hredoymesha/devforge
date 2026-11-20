@@ -257,7 +257,28 @@ registerTab('settings', 'Settings', async (v) => {
     }
   }, 0);
   const s = DF.state.settings;
+  const m = chrome.runtime.getManifest();
+  const agentState = h('span', { id: 'about-agent' }, 'not checked');
+  // Only on request: checking runs in the tab, which records the site in "Sites DevForge worked on".
+  // It reads the agent's version and never injects it.
+  const checkAgent = async () => {
+    try {
+      const pageVersion = await exec(() => (window.__DF ? window.__DF.version : null));
+      agentState.textContent =
+        pageVersion == null ? 'not loaded yet (it loads on first use)' : pageVersion === AGENT_VERSION ? 'matches the panel (' + pageVersion + ')' : 'version ' + pageVersion + ', older than the panel. It is replaced on next use.';
+    } catch (e) {
+      agentState.textContent = 'cannot check: ' + e.message;
+    }
+  };
+  const about = section(
+    'About DevForge',
+    kv({ Version: m.version, 'Version name': m.version_name || '(none)', 'Page agent version': String(AGENT_VERSION), 'Page agent in this tab': agentState }),
+    h('div', { class: 'row' }, h('button', { id: 'about-check', on: { click: checkAgent } }, 'Check this tab'))
+  );
+  about.id = 'about';
+  about.querySelector('h2').tabIndex = -1;
   v.append(
+    about,
     section(
       'Appearance',
       h(
@@ -269,6 +290,12 @@ registerTab('settings', 'Settings', async (v) => {
           THEMES.map((t) =>
             h('option', { value: t, selected: s.theme === t }, t === 'system' ? 'match system' : t)
           )
+        ),
+        h(
+          'select',
+          { id: 'set-density', 'aria-label': 'Density', on: { change: (e) => setDensity(e.target.value) } },
+          h('option', { value: 'comfortable', selected: s.density !== 'compact' }, 'comfortable'),
+          h('option', { value: 'compact', selected: s.density === 'compact' }, 'compact')
         )
       )
     ),
@@ -328,15 +355,14 @@ registerTab('settings', 'Settings', async (v) => {
       table(
         ['Permission', 'Why'],
         [
-          ['activeTab', 'Temporary access to the tab you invoke DevForge on.'],
-          ['all sites (host access)', 'Required so DevForge works on any page without a prompt per site. Settings → Site access below can still limit it to sites you choose.'],
-          ['scripting', 'Injects the inspector into a page only when you use it.'],
-          ['sidePanel', 'Shows the workbench.'],
-          ['storage', 'Saves preferences, interception rules, scan acknowledgements and performance history, locally.'],
+          ['scripting', 'Puts DevForge\'s page agent and network recorder into the page you work on, only when a tool needs them.'],
+          ['sidePanel', 'Shows DevForge in the browser\'s side panel.'],
+          ['storage', 'Keeps your settings, interception rules, performance history and scan records on this computer.'],
           ['contextMenus', 'Adds "Inspect with DevForge" to the right-click menu.'],
-          ['clipboardWrite', 'Copying code or prompts at your request.'],
-          ['declarativeNetRequest', 'Blocks redirect hops to private addresses when "follow redirects" is on.'],
-          ['cookies (optional)', 'Only if you allow exact cookie-flag checks in the Security tab.'],
+          ['clipboardWrite', 'Copies code, selectors and prompts when you click a Copy button. Chrome lists it as "Modify data you copy and paste"; DevForge only writes to the clipboard and never reads it.'],
+          ['declarativeNetRequest', 'Blocks DevForge\'s own downloads from reaching private, loopback or link-local addresses, at every redirect step. It only blocks. It cannot read or change pages. Chrome lists it as "Block content on any page"; DevForge\'s rule blocks only its own requests.'],
+          ['Site access (all sites)', 'Lets DevForge work on the page in front without asking for each site. Settings → Site access can limit DevForge to sites you list. Chrome\'s own Site access setting for the extension still applies.'],
+          ['cookies (optional)', 'Asked for only from the Security tab, for one site, to read whether cookies are HttpOnly, Secure and SameSite. Cookie values are never read into reports.'],
           ['debugger (not requested)', 'Deliberately absent: it would show Chrome\'s debugging bar and nothing here needs it.'],
         ]
       )

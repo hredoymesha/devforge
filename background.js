@@ -3,6 +3,11 @@
 
 const MENU_INSPECT = 'devforge-inspect';
 
+// The toolbar tooltip names the version, so people can tell which build is installed. The service
+// worker runs this each time it starts; the manifest's default_title is only the fallback.
+const manifest = chrome.runtime.getManifest();
+chrome.action.setTitle({ title: 'Open DevForge ' + (manifest.version_name || manifest.version) }).catch(() => {});
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel
     .setPanelBehavior({ openPanelOnActionClick: true })

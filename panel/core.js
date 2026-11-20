@@ -15,6 +15,7 @@ const DF = {
     lastSite: null,
     settings: {
       theme: 'system',
+      density: 'comfortable', // 'comfortable' | 'compact'
       shortcuts: {},
       lastTab: 'home',
       seenWelcome: false,
@@ -51,7 +52,7 @@ const AGENT_FILES = [
   'agent/prototype.js',
 ];
 // Bump whenever the agent API changes so pages holding an older copy get a fresh one.
-const AGENT_VERSION = 15;
+const AGENT_VERSION = 16;
 
 // Records what lib/stored.js left out of the saved data and tells the user once per new note.
 function noteIgnored(list) {
@@ -158,6 +159,12 @@ const busy = async (label, fn) => {
   }
 };
 
+// The version people see: version_name when the manifest has one, else the version.
+function versionLabel() {
+  const m = chrome.runtime.getManifest();
+  return m.version_name || m.version;
+}
+
 // page RPC. All calls run in the extension's isolated world in the active tab.
 async function activeTab() {
   const [t] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -173,7 +180,7 @@ async function activeTab() {
   return t;
 }
 const NO_ACCESS_MSG =
-  'DevForge has no access to this tab right now. Click the DevForge toolbar icon while this tab is active (temporary, this tab only), or enable access for all sites in Settings.';
+  'DevForge has no access to this tab right now. Click the DevForge toolbar icon while this tab is in front (this tab only), or set Site access to "On all sites" for DevForge in chrome://extensions.';
 const RESTRICTED =
   /^(chrome|edge|about|brave|opera|vivaldi|devtools|view-source|chrome-extension|moz-extension|chrome-untrusted):|^https:\/\/(chrome\.google\.com\/webstore|chromewebstore\.google\.com|microsoftedge\.microsoft\.com\/addons)/i;
 // Settings → Site access. True when DevForge may run on this address.
@@ -201,6 +208,17 @@ async function exec(func, args = [], world = 'ISOLATED', files) {
     throw new Error(
       'Site access is limited to the sites you chose, and this one is not on the list. Open Settings → Site access and add it, or switch “Allow all sites” back on.'
     );
+  // Chrome hides the address of a tab the extension cannot reach. With site access set to "On click",
+  // executeScript on such a tab neither runs nor fails (seen in Chrome 158), so stop here instead.
+  // Browser pages (chrome://, about:blank, data:) hide their address even with all-sites access, and a
+  // local file does too while "Allow access to file URLs" is off. A toolbar click helps with neither.
+  if (!t.url && !t.pendingUrl) {
+    const all = await chrome.permissions.contains({ origins: ['<all_urls>'] }).catch(() => false);
+    const files = await chrome.extension.isAllowedFileSchemeAccess().catch(() => true);
+    const fileNote = files ? '' : ' For a local file (file://), switch on "Allow access to file URLs" for DevForge in chrome://extensions.';
+    if (all) throw new Error('DevForge cannot run on this tab. Browsers do not allow extensions on their own pages (chrome://, a new tab, about:blank). Open a regular web page.' + fileNote);
+    throw new Error(NO_ACCESS_MSG + fileNote);
+  }
   try {
     const r = await chrome.scripting.executeScript(
       files
@@ -294,12 +312,6 @@ async function copy(text) {
     toast(ok ? 'Copied to clipboard' : 'Clipboard blocked: ' + e.message);
     return ok;
   }
-}
-function toCSV(rows) {
-  if (!rows.length) return '';
-  if (Array.isArray(rows[0])) return rows.map((r) => r.map(csvEsc).join(',')).join('\n');
-  const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))];
-  return [cols.join(','), ...rows.map((r) => cols.map((c) => csvEsc(r[c])).join(','))].join('\n');
 }
 function toMD(rows) {
   if (!rows.length) return '';

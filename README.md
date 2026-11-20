@@ -10,8 +10,9 @@ extraction. Everything runs in your browser. There are no accounts, servers or a
 Chrome DevTools is the reference, and DevForge does not try to replace it. It covers the work
 that DevTools makes slow: mocking an API response without a proxy, seeing which element caused
 your LCP, exporting a component with its computed styles, or turning a site's colours into
-design tokens. DevForge is a Manifest V3 extension. It asks for the least access it needs, and
-it only injects code into a page when you use a tool on that page.
+design tokens. DevForge is a Manifest V3 extension. It asks for access to all sites so it works on
+any page without a prompt, Settings can limit it to sites you list, and it only injects code into a
+page when you use a tool on that page.
 
 ## Install
 
@@ -71,16 +72,16 @@ The panels are grouped the way you would move through a debugging session.
 
 | Panel | What it does |
 | --- | --- |
-| Export | Exports the selected part of a page as a ZIP with its HTML (outer, inner, in context, shadow DOM, standalone), CSS (rules, computed, matched, inherited), the JavaScript that refers to it, selectors, structure, generated content, images and fonts, a preview picture, the part at three window widths (optional, resizes the window for a moment), a list of the media queries that apply to it, and a README that describes the part; or one file at a time. The Export tab also compares two exports (ZIPs from Export or Site) and lists what was added, removed or changed. It can also write the part as a React component, a Vue single-file component, a Web Component or a small React project that runs with Vite (generated from computed styles, not the original source). Selecting the whole page exports the page. Also: page bundles (scripts, styles, source maps, storage, network, HAR), a developer report, screenshots (element, viewport or stitched full page) and a pixel diff. Before anything is saved, DevForge checks the files for credential-like values and lets you mask them, keep them with a warning or leave those files out. See [docs/EXPORTS.md](docs/EXPORTS.md). The full ZIP can be sealed with a passphrase (`.zip.devforge-enc`, PBKDF2 and AES-GCM). Open it with `tools/decrypt.html` in the source folder, offline. It can also keep scripts, styles and images that load after the page (start watching first), listed in `data/loaded-later.json`. |
+| Export | Exports the selected part of a page as a ZIP with its HTML (outer, inner, in context, shadow DOM, standalone), CSS (rules, computed, matched, inherited), the JavaScript that refers to it, selectors, structure, generated content, images and fonts, a preview picture, the part at three window widths (optional, resizes the window for a moment), a list of the media queries that apply to it, and a README that describes the part; or one file at a time. The Export tab also compares two exports (ZIPs from Export or Site) and lists what was added, removed or changed. It can also write the part as a React component, a Vue single-file component, a Web Component or a small React project that runs with Vite (generated from computed styles, not the original source). Selecting the whole page exports the page. Also: page bundles (scripts, styles, source maps, storage, network, HAR), a developer report, screenshots (element, viewport or stitched full page) and a pixel diff. Before anything is saved, DevForge checks the files for credential-like values and lets you mask them, keep them with a warning or leave those files out. See [docs/EXPORTS.md](docs/EXPORTS.md). The full ZIP can be sealed with a passphrase (`.zip.devforge-enc`, PBKDF2 and AES-GCM). To open it, download this repository's source code (on the Releases page, "Source code (zip)"), unzip it and open [tools/decrypt.html](tools/decrypt.html) in a browser. It works offline. It can also keep scripts, styles and images that load after the page (start watching first), listed in `data/loaded-later.json`. |
 | Site | Detects the site's technology and downloads the files the page uses as an organised ZIP (rendered and original HTML, scripts, styles, fonts, images, manifest and service worker, structured data, a report and a README). Recovers original sources where the site publishes source maps. Never fetches private or loopback addresses. The Site tab also analyses a downloaded site ZIP: which original files make up each script, with their estimated sizes, and which packages appear in more than one folder. |
 | Recreate | Rebuilds an element from its computed styles, then refines the copy until its layout matches the original. |
 | Playground | An HTML/CSS/JS scratchpad that runs in a sandboxed page with no access to extension APIs. |
 | Automate | Records and replays step-by-step workflows, stored as JSON. |
-| AI | Builds a prompt from the selected element or task. You use it in the AI chat you already use. No API keys are needed, and nothing is sent until you click. **Copy only** stays on your computer. **Copy & open** opens the AI site, and for some sites it puts the prompt in the site's address, so read the prompt first. The prompt is checked for credential-like values before it is copied. |
+| AI | Builds a prompt from the selected element or task. You use it in the AI chat you already use. No API keys are needed, and DevForge sends nothing. **Copy only** stays on your computer. **Copy & open** also opens the AI site's start page; the site gets the prompt only when you paste it there and send it. The prompt is checked for credential-like values before it is copied. |
 | Workspace | Projects that collect what you save from other panels (elements, components, screenshots, data, workflows, playgrounds, AI tasks), stored in IndexedDB. |
 
-A command palette (`Ctrl+K`), in-panel shortcuts you can rebind, and light, dark and system
-themes are available in every panel. Every tab has an icon. Below about 640 px only the selected
+A command palette (`Ctrl+K`), in-panel shortcuts you can rebind, light, dark and system
+themes, and a Comfortable or Compact density are available in every panel. Every tab has an icon. Below about 640 px only the selected
 tab shows its name, so more panels fit before the rest move into the overflow menu.
 
 When the side panel is too narrow for every tab, the remaining panels move into an overflow menu.
@@ -224,16 +225,19 @@ its rules. Code that runs in the page before DevForge can still tamper with buil
 
 | Permission | Why it is needed |
 | --- | --- |
-| `activeTab` | Temporary access to the tab you open DevForge on. |
-| `scripting` | Injects the inspector and network capture, only when you use them. |
-| `sidePanel` | Shows the workbench. |
-| `declarativeNetRequest` | Installs a session rule that blocks DevForge's own downloads from reaching private, loopback or link-local addresses, including at any step of a redirect chain. It only blocks; it cannot read or change pages, and its rules apply to requests started by this extension, not to the sites you visit. No install warning is shown for it. |
-| `storage` | Saves preferences and interception rules on your machine. The list of sites DevForge worked on (Settings) is kept in session storage: it is not saved to disk and is cleared when the browser closes. |
-| `contextMenus` | Adds **Inspect with DevForge** to the right-click menu. |
-| `clipboardWrite` | Copies code and prompts when you ask. |
-| Site access (all sites) | Required since 4.1.1 so DevForge works on any page without a prompt per site (exports, cross-origin stylesheets, capture from page start, screenshots). Settings → Site access can limit DevForge to sites you list, and Chrome's own "Site access" control on the extension's details page still applies. `debugger` is deliberately **not** requested. |
-| No new permission in 4.4.0 | The site list and the access log use `storage`, which DevForge already has. `optional_host_permissions` was considered for the "ask per site" profile and not used: with `<all_urls>` granted at install, a per-site grant would change the default install and would not narrow it. The profile is Settings → Site access, with an **Allow this site** button on Home. |
-| `cookies` (optional) | Requested only from the Security tab's "Allow cookie flag checks" button, for one site. Lets DevForge read whether cookies are HttpOnly, Secure and SameSite. Cookie values are never read into reports. Revocable in the Security tab or the extension's details page. |
+| `scripting` | Puts DevForge's page agent and network recorder into the page you work on, only when a tool needs them. |
+| `sidePanel` | Shows DevForge in the browser's side panel. |
+| `storage` | Keeps your settings, interception rules, performance history and scan records on this computer. |
+| `contextMenus` | Adds "Inspect with DevForge" to the right-click menu. |
+| `clipboardWrite` | Copies code, selectors and prompts when you click a Copy button. Chrome lists it as "Modify data you copy and paste"; DevForge only writes to the clipboard and never reads it. |
+| `declarativeNetRequest` | Blocks DevForge's own downloads from reaching private, loopback or link-local addresses, at every redirect step. It only blocks. It cannot read or change pages. Chrome lists it as "Block content on any page"; DevForge's rule blocks only its own requests. |
+| Site access (all sites) | Lets DevForge work on the page in front without asking for each site. Settings → Site access can limit DevForge to sites you list. Chrome's own Site access setting for the extension still applies. |
+| `cookies` (optional) | Asked for only from the Security tab, for one site, to read whether cookies are HttpOnly, Secure and SameSite. Cookie values are never read into reports. |
+
+`debugger` is not requested. No permission was added in 4.4.0 or 4.5.0; 4.5.0 removes `activeTab` (see the CHANGELOG).
+
+The code holds one web address that DevForge never loads: `cdn.tailwindcss.com` in `lib/gen.js`. It is
+written into the `index.html` of a Tailwind export, so that exported page can load Tailwind.
 
 ## Development
 
@@ -261,6 +265,10 @@ for conventions and [docs/](docs/) for the security model, Owner mode, exports, 
 browser support.
 
 `npm run package` makes the release files in `release-out/`: `DevForge-<version>-extension.zip` (only the files Chrome loads: `manifest.json`, `background.js`, `sidepanel.html`, `sidepanel.css`, `agent.js`, `netcap.js`, `netbridge.js`, `sandbox.html`, `sandbox.js`, `agent/`, `lib/`, `panel/` and `icons/`), `DevForge-<version>-source.zip`, and a `.sha256` file for each. Files are stored in sorted order with a fixed timestamp, so two runs give the same checksum. `npm run check` fails if the version differs between `manifest.json`, `package.json`, `package-lock.json` and the newest `CHANGELOG.md` heading. Keep the manifest `description` at 132 characters or fewer.
+
+`tools/livecheck/` checks a release ZIP before it goes to the Chrome Web Store: the package, the
+permissions against their written reasons, and a run through every panel in Chromium with a report. It has
+its own `package.json`; see [tools/livecheck/README.md](tools/livecheck/README.md).
 
 What DevForge keeps and sends is described in [PRIVACY.md](PRIVACY.md).
 

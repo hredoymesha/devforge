@@ -58,3 +58,30 @@ test('a version that differs between the manifest, package files and changelog m
     }
   }
 });
+
+test('the manifest version must be one to four whole numbers, and version_name must start with it', () => {
+  const cases = [
+    [{ version: '4.5.0', version_name: '4.5.0' }, null],
+    [{ version: '4.5.0', version_name: '4.5.0 beta' }, null],
+    [{ version: '4.5.0' }, null],
+    [{ version: '4.5.0', version_name: '4.4.2' }, /version_name "4\.4\.2" does not start with the version 4\.5\.0/],
+    [{ version: '4.05.0' }, /is not one to four whole numbers/],
+    [{ version: '1.2.3.4.5' }, /is not one to four whole numbers/],
+    [{ version: '4.5.0-beta' }, /is not one to four whole numbers/],
+    [{ version: '70000.0' }, /is not one to four whole numbers/],
+  ];
+  for (const [fields, error] of cases) {
+    const dir = copyRepo();
+    try {
+      const p = path.join(dir, 'manifest.json');
+      const m = JSON.parse(fs.readFileSync(p, 'utf8'));
+      delete m.version_name;
+      fs.writeFileSync(p, JSON.stringify({ ...m, ...fields }, null, 2));
+      const r = runCheck(dir);
+      if (error) assert.match(r.stderr, error, JSON.stringify(fields));
+      else assert.doesNotMatch(r.stderr, /version_name|whole numbers/, JSON.stringify(fields));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});

@@ -147,12 +147,12 @@ registerTab('home', 'Home', async (v) => {
       'div',
       { class: 'home-hero' },
       h('h2', null, 'What would you like to do?'),
-      h('p', { class: 'sev-info' }, 'DevForge works on the page in your active tab. Nothing leaves your browser.'),
+      h('p', { class: 'sev-info' }, 'DevForge works on the page in your active tab. It has no server, and nothing is sent unless you start it.'),
       status1
     )
   );
 
-  // Whether DevForge can reach this page right now (activeTab access, restricted pages, file URLs).
+  // Whether DevForge can reach this page right now (site access, restricted pages, file URLs).
   (async () => {
     try {
       const tab = await activeTab();

@@ -19,12 +19,40 @@ const BANNED = [
   /\bit is important to note\b/i,
   /\bensures? that\b/i,
   /\ba variety of\b/i,
+  /\bgame[- ]chang(er|ing)\b/i,
+  /\belevat(e|es|ed|ing)\b/i,
+  /\bempower(s|ed|ing)?\b/i,
+  /\bstreamlin(e|es|ed|ing)\b/i,
+  /\beffortless(ly)?\b/i,
+  /\bstate[- ]of[- ]the[- ]art\b/i,
+  /\bbest[- ]in[- ]class\b/i,
+  /\bworld[- ]class\b/i,
+  /\bnext[- ]level\b/i,
+  /\bharness(es|ed|ing)? the\b/i,
+  /\bin today's\b/i,
+  /\bdive into\b/i,
+  /\btapestry\b/i,
+  /\btestament\b/i,
+  /\bpivotal\b/i,
+  /\bsupercharg(e|es|ed|ing)\b/i,
+  /\bblazing(ly)?[- ]fast\b/i,
+  /\brest assured\b/i,
+  /\bit'?s worth noting\b/i,
+  /\bfurthermore\b/i,
+  /\bmoreover\b/i,
+  /\bboasts?\b/i,
+  /\bcrucial(ly)?\b/i,
+  /\bever[- ]evolving\b/i,
+  /\bembark(s|ed|ing)?\b/i,
+  /\bmeticulous(ly)?\b/i,
+  /\bholistic\b/i,
+  /\bsynerg(y|ies)\b/i,
 ];
 
-const TEXT_FILES = ['README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'PRIVACY.md', 'SECURITY.md'];
+const TEXT_FILES = ['README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'PRIVACY.md', 'SECURITY.md', 'tools/livecheck/README.md'];
 const TEXT_DIRS = ['docs'];
-const CODE_DIRS = ['lib', 'panel', 'agent'];
-const CODE_FILES = ['agent.js', 'background.js', 'netcap.js', 'netbridge.js', 'sandbox.js', 'sandbox.html', 'sidepanel.html', 'scripts/check.js', 'scripts/package.js'];
+const CODE_DIRS = ['lib', 'panel', 'agent', 'tools/livecheck', 'tools/livecheck/lib'];
+const CODE_FILES = ['agent.js', 'background.js', 'netcap.js', 'netbridge.js', 'sandbox.js', 'sandbox.html', 'sidepanel.html', 'scripts/check.js', 'scripts/package.js', 'tools/livecheck/checklist.html'];
 const VENDORED = /^lib\/(acorn|beautifier)/;
 const MAX_AVERAGE_WORDS = 18;
 

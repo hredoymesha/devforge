@@ -4,6 +4,8 @@ registerTab('play', 'Playground', async (v) => {
     css: 'body{font-family:system-ui;padding:1rem}\nbutton{padding:.4rem .8rem}',
     js: "document.getElementById('b').onclick = () => console.log('clicked', new Date().toISOString());",
   });
+  // A Playground opened from elsewhere (an AI reply, a saved item) may bring only one language.
+  for (const k of ['html', 'css', 'js']) if (typeof pg[k] !== 'string') pg[k] = '';
   const mk = (k, label) => {
     const ta = h('textarea', { rows: 7, 'aria-label': label, spellcheck: 'false' });
     ta.value = pg[k];

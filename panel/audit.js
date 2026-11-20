@@ -33,7 +33,8 @@ function issueTable(issues, onSel) {
                 'Select'
               )
             : '',
-        ])
+        ]),
+        { class: 'audit-issues' }
       )
     : h('div', { class: 'empty sev-info' }, 'No issues found by these checks.');
 }

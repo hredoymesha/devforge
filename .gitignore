@@ -45,3 +45,6 @@ desktop.ini
 
 # Release files made for upload
 release-out/
+
+# Reports written by the live check (tools/livecheck)
+livecheck-report/

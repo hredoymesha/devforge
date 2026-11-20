@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hand check in real Chrome</title>
+<style>
+:root{--bg:#fff;--fg:#1c2330;--mut:#5b6677;--line:#d7dde8;--card:#f5f7fb;--ok:#1b6b3a;--bad:#b3261e;--acc:#2f5fd0}
+@media (prefers-color-scheme:dark){:root{--bg:#0f141c;--fg:#e6ebf3;--mut:#9aa6b8;--line:#2a3445;--card:#161d29;--ok:#6fd39a;--bad:#ff8a80;--acc:#8aa8ff}}
+body{font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:0;padding:24px 16px}
+main{max-width:860px;margin:0 auto}h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:26px 0 6px}
+p.s{color:var(--mut);margin:0 0 12px}ol,ul{padding-left:20px}
+.item{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:8px 10px;margin:6px 0}
+.item b{display:block}.item span{color:var(--mut);font-size:14px}
+.row{display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap}
+button{font:inherit;border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:6px;padding:3px 10px;cursor:pointer}
+button[aria-pressed=true].p{border-color:var(--ok);color:var(--ok);font-weight:700}
+button[aria-pressed=true].f{border-color:var(--bad);color:var(--bad);font-weight:700}
+input[type=text]{flex:1;min-width:160px;font:inherit;border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:6px;padding:3px 8px}
+.bar{position:sticky;top:0;background:var(--bg);padding:8px 0;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+#out{width:100%;min-height:90px;font:13px/1.4 ui-monospace,monospace;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:8px;box-sizing:border-box}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+</style>
+</head>
+<body>
+<main>
+<h1>Hand check in real Chrome</h1>
+<p class="s">The automatic check cannot do these. Chrome 137 and newer, the normal browser, no longer lets a script load an extension, and the automatic check opens the panel as a tab. So you do this part by hand, once, before you upload. Your marks are saved in this browser.</p>
+<div class="bar"><span id="count">0 of 0 done</span><button id="copy">Copy my results</button><button id="reset">Clear all marks</button></div>
+
+<h2>1. Install it like a person would</h2>
+<ol>
+<li>Unzip <code>DevForge-x.y.z-extension.zip</code> into a new empty folder.</li>
+<li>In Chrome open <code>chrome://extensions</code>, turn on <b>Developer mode</b>, press <b>Load unpacked</b>, choose that folder.</li>
+<li>Pin the DevForge icon with the puzzle-piece button.</li>
+</ol>
+<div id="g1"></div>
+
+<h2>2. Open it</h2><div id="g2"></div>
+<h2>3. Every panel, one real try each</h2>
+<p class="s">Open an ordinary website (not a chrome:// page) and go through the panels in order.</p><div id="g3"></div>
+<h2>4. Awkward places</h2><div id="g4"></div>
+<h2>5. Permissions and privacy</h2><div id="g5"></div>
+<h2>6. Before you press Upload</h2><div id="g6"></div>
+<h2>Your results</h2><textarea id="out" readonly aria-label="Results"></textarea>
+</main>
+<script>
+(function () {
+  var groups = {
+    g1: [
+      ['The extension card shows the right version and name', 'Check the version under the name. It should match the file name of the ZIP.'],
+      ['No red "Errors" button on the extension card', 'Use the extension for a few minutes, then look at the card again.'],
+      ['The toolbar icon tooltip says "Open DevForge" and the version', 'Hover over the icon. For 4.5.0 it reads "Open DevForge 4.5.0".'],
+      ['The panel header shows the same version, and Settings → About DevForge lists it', 'Ctrl+K, type "about", press Enter.']
+    ],
+    g2: [
+      ['Clicking the toolbar icon opens the side panel', ''],
+      ['The shortcut Ctrl+Shift+Y opens it too', 'On a Mac use Command+Shift+Y.'],
+      ['The shortcut Ctrl+Shift+U starts the element picker', ''],
+      ['Right-click on a page: "Inspect with DevForge" is there and works', ''],
+      ['Drag the side panel wider and narrower: nothing is cut off or overlaps', 'Try the narrowest width Chrome allows.']
+    ],
+    g3: [
+      ['Home', 'It says it can work on this page. Open it on a chrome:// page: it should say it cannot, in plain words.'],
+      ['Guide', 'Open two cards. The text is readable.'],
+      ['Inspect', 'Pick an element on the page. Selectors and the box model appear.'],
+      ['CSS', 'Matched rules show. Change one value and see the page change.'],
+      ['Network', 'Reload the page. Requests appear. Click one to see details.'],
+      ['Perf', 'Vitals show. Slow items are explained.'],
+      ['Mutations', 'Start it, click something on the page, see the changes listed.'],
+      ['Storage', 'Keys of the page are listed. Add one and remove it.'],
+      ['Tokens', 'Colours and fonts of the page are listed. Export one format.'],
+      ['Export', 'Export a selected part as a ZIP. Open the ZIP: files make sense.'],
+      ['Site', 'Download the site as a ZIP on a small public page you own. Open the ZIP.'],
+      ['Recreate', 'Rebuild an element. The copy looks like the original.'],
+      ['Audit', 'Run it. Results appear and make sense.'],
+      ['Security', 'Run a passive scan on a site you own. The report reads clearly.'],
+      ['Owner', 'Make a passphrase. Lock and unlock. Close and reopen the panel: it asks again.'],
+      ['Data', 'Pull the links or tables from the page.'],
+      ['AI', 'Build a prompt. "Copy only" copies. Nothing is sent anywhere.'],
+      ['Prototype', 'Change a colour of an element. Reload the page: it is back to normal.'],
+      ['Playground', 'Run the sample. The result shows.'],
+      ['Automate', 'Record two steps, replay them.'],
+      ['Workspace', 'Save something, reopen the panel, it is still there.'],
+      ['Settings', 'Change the theme: dark, light and system all look right. Switch density to compact and back.'],
+      ['Copy buttons', 'Click Copy selector in Inspect, then paste into Notepad. Do it again after clicking on the web page first, then on the panel.']
+    ],
+    g4: [
+      ['A page you are not allowed to read (chrome://, the Web Store, a PDF)', 'DevForge says so in plain words, without an error.'],
+      ['A local file (file://) page', 'Either it works or it says why not.'],
+      ['A page with iframes and a page with a login form', 'Nothing breaks. No password value appears in any report.'],
+      ['A very big page (a long news site)', 'The panel stays responsive.'],
+      ['Incognito window', 'Allow it on the extension card, then check it works, or that it says why not.'],
+      ['Two Chrome windows open at once', 'Each panel works on its own window.'],
+      ['Reload the extension from chrome://extensions with a panel open', 'The panel recovers or tells you to reopen it.']
+    ],
+    g5: [
+      ['Extension card, "Site access": set it to "On click"', 'Open a new site. Home says DevForge has no access. Click the icon: Inspect, Export and a screenshot work on that tab.'],
+      ['The optional cookies permission is asked for only when you use that feature', 'Say no once: the rest of the Security tab still works.'],
+      ['Open the Network panel of Chrome DevTools while you use DevForge', 'No request from DevForge to any outside address.'],
+      ['The text in the store listing matches what the extension really does', 'Read the permission reasons and compare them to what you saw.']
+    ],
+    g6: [
+      ['The automatic report shows 0 failed', ''],
+      ['The yellow items in the report have been read', ''],
+      ['The privacy policy page is public and the link opens', ''],
+      ['Screenshots are from this version', ''],
+      ['You tried the extension from the exact ZIP you will upload', 'Not from the source folder.']
+    ]
+  };
+  var KEY = 'devforge-handcheck-v2';
+  var state = {};
+  try { state = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { state = {}; }
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* private window */ } }
+  var all = [];
+  function el(tag, props, kids) {
+    var n = document.createElement(tag);
+    Object.keys(props || {}).forEach(function (k) { if (k === 'text') n.textContent = props[k]; else n.setAttribute(k, props[k]); });
+    (kids || []).forEach(function (c) { n.appendChild(c); });
+    return n;
+  }
+  Object.keys(groups).forEach(function (gid) {
+    var host = document.getElementById(gid);
+    groups[gid].forEach(function (it, i) {
+      var key = gid + '-' + i;
+      all.push({ key: key, title: it[0], group: gid });
+      var rec = state[key] || { s: '', n: '' };
+      var pass = el('button', { 'class': 'p', type: 'button', 'aria-pressed': rec.s === 'pass', text: 'Works' });
+      var fail = el('button', { 'class': 'f', type: 'button', 'aria-pressed': rec.s === 'fail', text: 'Problem' });
+      var note = el('input', { type: 'text', 'aria-label': 'Note for ' + it[0], placeholder: 'Note (optional)' });
+      note.value = rec.n;
+      function set(s) {
+        rec.s = rec.s === s ? '' : s; state[key] = rec;
+        pass.setAttribute('aria-pressed', rec.s === 'pass'); fail.setAttribute('aria-pressed', rec.s === 'fail');
+        save(); update();
+      }
+      pass.addEventListener('click', function () { set('pass'); });
+      fail.addEventListener('click', function () { set('fail'); });
+      note.addEventListener('input', function () { rec.n = note.value; state[key] = rec; save(); update(); });
+      var box = el('div', { 'class': 'item' }, [el('b', { text: it[0] })]);
+      if (it[1]) box.appendChild(el('span', { text: it[1] }));
+      box.appendChild(el('div', { 'class': 'row' }, [pass, fail, note]));
+      host.appendChild(box);
+    });
+  });
+  function lines() {
+    return all.map(function (a) {
+      var r = state[a.key] || { s: '', n: '' };
+      return (r.s === 'pass' ? '[ok]      ' : r.s === 'fail' ? '[PROBLEM] ' : '[not yet] ') + a.title + (r.n ? ' - ' + r.n : '');
+    });
+  }
+  function update() {
+    var done = all.filter(function (a) { return state[a.key] && state[a.key].s; }).length;
+    var bad = all.filter(function (a) { return state[a.key] && state[a.key].s === 'fail'; }).length;
+    document.getElementById('count').textContent = done + ' of ' + all.length + ' done, ' + bad + ' problem(s)';
+    document.getElementById('out').value = lines().join('\n');
+  }
+  document.getElementById('copy').addEventListener('click', function () {
+    var t = document.getElementById('out'); t.select();
+    if (navigator.clipboard) navigator.clipboard.writeText(t.value).catch(function () { document.execCommand('copy'); });
+    else document.execCommand('copy');
+  });
+  document.getElementById('reset').addEventListener('click', function () {
+    if (!confirm('Clear every mark?')) return;
+    state = {}; save(); location.reload();
+  });
+  update();
+})();
+</script>
+</body>
+</html>

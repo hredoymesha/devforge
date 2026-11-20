@@ -279,7 +279,8 @@ least 12 characters), and click **Download everything (ZIP)**. The file is named
 The header (the key settings, the IV and the time) is checked with the data, so changing any part of
 the file makes it fail to open. There is no way to recover a file whose passphrase you lost.
 
-To open the file, open `tools/decrypt.html` from the DevForge source folder in a browser. It works
+To open the file, download DevForge's source code (the repository, or "Source code (zip)" on its Releases
+page), unzip it and open `tools/decrypt.html` in a browser. It works
 without a network connection, and it does not send the file or the passphrase anywhere. Choose the
 file, type the passphrase and save the ZIP. A wrong passphrase gives one message and no output.
 

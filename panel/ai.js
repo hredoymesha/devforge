@@ -13,7 +13,7 @@ registerTab('ai', 'AI', async (v) => {
     'select',
     { 'aria-label': 'AI service' },
     Object.entries(DFAI.PROVIDERS).map(([k, p]) =>
-      h('option', { value: k }, p.name + (p.param ? '' : ' (paste manually)'))
+      h('option', { value: k }, p.name)
     )
   );
   const task = h('textarea', {
@@ -96,15 +96,15 @@ registerTab('ai', 'AI', async (v) => {
       aiS.action = action.value;
       const ta = h('textarea', { rows: 12, id: 'ai-text' });
       ta.value = b.text;
-      const plan = DFAI.launchPlan(prov.value, b.text);
+      const plan = DFAI.launchPlan(prov.value);
       clear(out).append(
         h(
           'div',
           { class: 'card sev-warn' },
           h('b', null, 'Privacy: '),
-          'This prompt contains page content (below). It stays here until YOU click Send; then it goes to ' +
+          'This prompt contains page content (below). DevForge sends it nowhere. ' +
             plan.name +
-            " under that service's terms. Review and edit it first."
+            " receives it only when you paste it there and send it, under that service's terms. Review and edit it first."
         ),
         h(
           'div',
@@ -123,13 +123,13 @@ registerTab('ai', 'AI', async (v) => {
                 click: async () => {
                   const text = await guardText($('#ai-text').value, 'prompt');
                   if (text == null) return;
-                  const p = DFAI.launchPlan(prov.value, text);
+                  const p = DFAI.launchPlan(prov.value);
                   const copied = await copy(text);
                   await chrome.tabs.create({ url: p.url });
                   status(
                     (copied
                       ? 'Copied to clipboard. '
-                      : 'Clipboard FAILED - copy the text manually. ') + p.note,
+                      : 'Copying to the clipboard failed. Copy the text by hand. ') + p.note,
                     copied ? 'ok' : 'err'
                   );
                   aiS.sentAt = Date.now();
@@ -250,8 +250,7 @@ registerTab('ai', 'AI', async (v) => {
                   {
                     on: {
                       click: () => {
-                        DF.state.pg = DF.state.pg || {};
-                        DF.state.pg[b.lang] = b.code;
+                        DF.state.pg = { html: '', css: '', js: '', ...DF.state.pg, [b.lang]: b.code };
                         DF.state.pgPaused = true;
                         show('play');
                       },
@@ -321,7 +320,7 @@ registerTab('ai', 'AI', async (v) => {
       h(
         'div',
         { class: 'sev-info' },
-        'Free path: you paste into the chat site you already use. No API keys, no costs. URL prefill for Claude/ChatGPT is best-effort; the clipboard copy is the dependable path.'
+        'Free path: you paste into the chat site you already use. No API keys, no costs. Copy & open copies the prompt and opens the site; nothing is put in its address.'
       )
     ),
     out,

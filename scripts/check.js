@@ -94,6 +94,15 @@ if (agentVersion(core) !== agentVersion(agentSrc)) {
 // Wording: filler words in the docs, interface strings and comments (scripts/style-check.js).
 problems.push(...require('./style-check.js').run(root));
 
+// Chrome reads "version" as one to four whole numbers from 0 to 65535, without leading zeros.
+// "version_name" is only what people see, so it must start with that version and cannot drift from it.
+if (!/^(0|[1-9]\d{0,4})(\.(0|[1-9]\d{0,4})){0,3}$/.test(manifest.version || '') || manifest.version.split('.').some((n) => Number(n) > 65535)) {
+  problems.push(`manifest version "${manifest.version}" is not one to four whole numbers`);
+}
+if ('version_name' in manifest && (typeof manifest.version_name !== 'string' || !manifest.version_name.startsWith(manifest.version))) {
+  problems.push(`manifest version_name "${manifest.version_name}" does not start with the version ${manifest.version}`);
+}
+
 // One version everywhere: the manifest, both npm files and the newest changelog heading.
 const versionOf = (file, pick) => {
   try {

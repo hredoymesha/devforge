@@ -137,3 +137,9 @@ test('port policy: the page may reach its own host on dev ports but not on well-
   assert.equal(S.blocksPrivate('http://localhost:2375/', 'http://localhost:2375/'), false, 'a page that is itself on that port may fetch from it');
   assert.equal(S.blocksPrivate('http://localhost:9200/', 'https://example.com/'), true);
 });
+
+test('toCSV escapes the header row like the cells: quotes, commas and formula starts', () => {
+  assert.equal(S.toCSV([{ '=HYPERLINK("x")': 1, 'a,b': '=2+3', kind: 'fetch' }]), '"\'=HYPERLINK(""x"")","a,b",kind\n1,\'=2+3,fetch');
+  assert.equal(S.toCSV([['=1', 'b']]), "'=1,b");
+  assert.equal(S.toCSV([]), '');
+});
